@@ -1,1 +1,5 @@
 target/
+# Regenerable CLI outputs (`physcad build examples/*.pcm --stl artifacts/*.stl`);
+# their sha256 are recorded in docs/MILESTONES.md as determinism evidence, the
+# bytes themselves are not source.
+artifacts/

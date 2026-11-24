@@ -120,6 +120,15 @@ part = torus(0.3, 0.06, 1024, 1024)
     let m = parse_model(src, "gate.pcm").expect("gate model must parse");
     assert_eq!(m.density_g_cm3, 7.85);
     let s = csg::evaluate(&m.graph).expect("gate model must build");
+    // Resolution wiring guard: 1024x1024 must produce exactly 2*1024*1024
+    // triangles. (The 2026-11-24 red run printed this number and we could
+    // not tell input from geometry apart; 2*1024*1024 = 2^21 is simply the
+    // CORRECT count, and now the gate asserts it.)
+    assert_eq!(
+        s.num_tri,
+        2 * 1024 * 1024,
+        "torus segs must reach the kernel"
+    );
     let analytic = 2.0 * PI * PI * 0.3 * 0.06 * 0.06;
     require_gate("torus", s.volume_mm3, analytic);
     let mass_analytic = analytic * 7.85 / 1000.0;

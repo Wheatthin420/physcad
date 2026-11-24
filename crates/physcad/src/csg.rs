@@ -300,11 +300,19 @@ pub fn evaluate(graph: &GeoGraph) -> Result<Solid, KernelError> {
     let genus = root_m.genus();
     let num_tri = root_m.num_tri();
     let mesh = kernel_to_display(root_m);
-    if mesh.closed_manifold_check().is_err() {
+    if let Err(why) = mesh.closed_manifold_check() {
         // Kernel guarantees manifoldness; if this ever fires we have a
-        // conversion bug, not a geometry bug — fail loudly, never ship it.
+        // conversion bug or corrupted data, not a geometry bug — fail
+        // loudly, never ship it. Carry BOTH counts and the sub-check
+        // text: equal counts + unpaired edges => the mesh bytes changed
+        // between kernel and audit (process memory corruption — this
+        // box has documented bad-page-state events); display != kernel
+        // tris => conversion bug in kernel_to_display; a specific
+        // (a,b) edge => geometry bug. (2026-11-24: the first version
+        // dropped `why` and one red run was un-forensicable.)
         return Err(KernelError(format!(
-            "internal: kernel output failed closed-manifold check ({} tris)",
+            "internal: kernel output failed closed-manifold check \
+             (kernel {num_tri} tris, display {} tris): {why}",
             mesh.triangle_count()
         )));
     }
@@ -467,5 +475,35 @@ mod tests {
         gr.push("u", GeoNode::Union { a: 0, b: 1 }).unwrap();
         let s = evaluate(&gr).unwrap();
         assert!((s.volume_mm3 - 2.0).abs() < 1e-9);
+    }
+
+    /// The M3 gate torus (R=0.3, tube=0.06 @1024x1024) through the full
+    /// kernel path must pass the closed-manifold audit inside `evaluate`,
+    /// and its counts must be exactly the requested tessellation. Locked
+    /// 2026-11-24 after one non-reproducible red run (docs/MILESTONES.md,
+    /// M3 repair): the audit is deterministic and green 18/18 probe
+    /// rounds, so any future fire is real corruption or a real geometry
+    /// bug, and the message now says which.
+    #[test]
+    fn torus_gate_resolution_stays_closed_manifold() {
+        let mut gr = g();
+        gr.push(
+            "ring",
+            GeoNode::Torus {
+                r: 0.3,
+                tube: 0.06,
+                major_segs: 1024,
+                minor_segs: 1024,
+            },
+        )
+        .unwrap();
+        let s = evaluate(&gr).expect("gate-resolution torus must stay closed-manifold");
+        assert_eq!(s.num_tri, 2 * 1024 * 1024, "kernel tri count == 2*segs^2");
+        assert_eq!(
+            s.mesh.triangle_count(),
+            s.num_tri,
+            "display tris must match kernel tris"
+        );
+        assert_eq!(s.genus, 1);
     }
 }

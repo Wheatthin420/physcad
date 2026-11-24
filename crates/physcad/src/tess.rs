@@ -323,6 +323,26 @@ mod tests {
         assert!(v > 0.0, "positive winding");
     }
 
+    /// At the M3 gate resolution the grid must be one welded surface:
+    /// exactly major*minor vertices, no two bit-identical (a duplicate
+    /// would fuse faces in the kernel and look like non-manifold output).
+    /// Pinned 2026-11-24 after the non-reproducible 1024x1024 gate scare.
+    #[test]
+    fn torus64_gate_grid_is_welded_and_unique() {
+        let (n, m) = (1024usize, 1024usize);
+        let mesh = torus64(0.3, 0.06, n, m);
+        assert_eq!(mesh.positions.len(), n * m, "every grid vertex pushed once");
+        assert_eq!(mesh.indices.len() / 3, 2 * n * m);
+        let mut seen: std::collections::HashSet<[u64; 3]> =
+            std::collections::HashSet::with_capacity(n * m);
+        for p in &mesh.positions {
+            assert!(
+                seen.insert([p[0].to_bits(), p[1].to_bits(), p[2].to_bits()]),
+                "torus64 grid contains bitwise-duplicate positions"
+            );
+        }
+    }
+
     /// Measure discretization error vs the analytic 2*pi^2*R*r^2 at the
     /// resolutions used by the M3 gates; with segments doubled ISOTROPICALLY
     /// the error must drop more than 3x (true behavior is O(h^2) -> ~4x),

@@ -152,3 +152,67 @@ Known limits after M4: no ellipse/spline entities; angle between arcs or
 point-line distance constraints not implemented; no construction geometry;
 sketch loops not yet extracted for extrude (M5); solver is dense O(n^3)
 fine up to a few hundred params, component-splitting (3BCAD) when needed.
+
+## M3 repair — torus gate red-run forensics (2026-11-24, main@aa43a19)
+
+Observed (parent session): `cargo test -j 3` on main@aa43a19 failed
+`torus_analytic_volume_mass_and_genus` with
+`kernel output failed closed-manifold check (2097152 tris)` — 7/8 gates.
+
+Could NOT reproduce on source (every command on this box, same day):
+- 5/5 full m3_gates runs green (incl. the parent's exact 8-test binary), plus
+  an instrumented probe replaying the exact gate path: 6/6 release + 12/12
+  dev-profile rounds green.
+- Probe audit of the kernel output at gate resolution, INDEPENDENT of the
+  gate's own check: torus64 grid 1,048,576 verts with 0 bitwise-duplicate
+  positions; manifold round trip -> 2,097,152 tris, 6,291,456 directed edges,
+  0 degenerate tris, 0 edges with count != 1, 0 missing opposite pairs,
+  0 f64->f32 vertex collisions.
+- The Rust path (torus64 -> weld-dedup -> from_mesh_f64 -> to_mesh_f64 ->
+  f32 narrow -> edge audit) is pure; manifold-csg-sys 3.5.106 builds
+  single-threaded (default-features=false). Same source + same data cannot
+  give different verdicts, so the red run did not have the source tree's data.
+
+The 2^21 figure is NOT a smoking gun: 2*1024*1024 = 2,097,152 is exactly the
+CORRECT triangle count for the requested 1024x1024 torus. A resolution
+parameter bug (the prime suspicion) would show a different count; the wiring
+model.rs -> GeoNode::Torus -> torus64 was checked argument-by-argument and is
+now pinned by tests (model::torus_segment_args_wire_in_order with asymmetric
+48/32 segs; gate asserts num_tri == 2*1024*1024).
+
+Root cause classification for the single red run — environmental, one of:
+1. Live memory corruption in the test process. Kernel journal the same day:
+   `BUG: Bad page state in process strata` at 07:51:14, 07:51:15, 08:29:46
+   (documented DKMS amdgpu 7.2.3 page-corruption issue on this box; a data
+   bit-flip in the ~1GB of fresh HashMap/mesh pages breaks the edge audit
+   while every count stays normal — precisely the observed signature).
+2. Stale pre-merge artifacts (the documented M4 repair failure mode): the
+   aa43a19 commit message itself quotes "41 lib + 8 gate + 2 view lib +
+   3 capture" while main's tree measures 43 lib + 8 + 3 view lib + 4 capture
+   — those numbers came from a worktree build, not the merge result.
+
+The real SOFTWARE defect found: `evaluate` discarded the sub-check's Err text
+(`closed_manifold_check().is_err()`), leaving only a raw tri count in the
+failure — un-forensicable. Fixed: the error now carries the failing
+sub-check string plus BOTH kernel and display triangle counts, which
+distinguishes corruption (counts equal, edges unpaired) from conversion bugs
+(counts differ) from geometry bugs (specific named edge) in one line.
+
+Hardening (same commit): csg::torus_gate_resolution_stays_closed_manifold
+(full kernel audit at gate resolution, exact counts + genus),
+tess::torus64_gate_grid_is_welded_and_unique (1,048,576 bitwise-unique grid
+verts), model::torus_segment_args_wire_in_order, gate num_tri assert.
+The gate was strengthened, not weakened; 1024x1024 is proven feasible.
+
+Sample-STL decision: artifacts/*.stl are regenerable CLI outputs, now
+git-ignored (source of truth = examples/*.pcm + this file's sha256 records).
+Regenerate: `cargo run --release --bin physcad -- build examples/<name>.pcm
+--stl artifacts/<name>.stl`. Re-verified byte-identical to the aa43a19 records:
+bore-plate  16004736ee145b81aa7a6c3590dc855673304fd62c447d4e574a376202068ace
+torus-plate 1ecf0f21843ec770fdb6641957138279e71342403373fb7f5866a2e244aa5af9
+
+Post-repair gates on main@4839fda (run in a clean worktree of that HEAD to
+exclude a concurrent session's uncommitted WIP sitting in the main checkout):
+`cargo fmt --check` clean; `cargo clippy -j 3 --all-targets` 0 warning lines;
+`cargo test -j 3` exit 0 — 46 lib + 8 m3_gates + 10 sketch_gates + 3 view lib
++ 2 csg_capture + 1 m4 capture + 1 offscreen = 71 passed, 0 failed.

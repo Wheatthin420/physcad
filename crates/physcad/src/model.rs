@@ -691,6 +691,25 @@ part  = cut(plate, bore)
         );
     }
 
+    /// torus(RING, TUBE, MAJOR, MINOR): a major/minor swap or argument
+    /// drift in the wiring must be test-visible. Pinned 2026-11-24 after
+    /// a gate red run whose "2^21 tris" figure made a resolution-parameter
+    /// bug the prime suspect (it wasn't one — but the guard now exists).
+    #[test]
+    fn torus_segment_args_wire_in_order() {
+        let m = parse_model("ring = torus(1.0, 0.25, 48, 32)", "t.pcm").unwrap();
+        let GeoNode::Torus {
+            r,
+            tube,
+            major_segs,
+            minor_segs,
+        } = m.graph.nodes[0].1
+        else {
+            panic!("ring must be a torus");
+        };
+        assert_eq!((r, tube, major_segs, minor_segs), (1.0, 0.25, 48, 32));
+    }
+
     #[test]
     fn demo_file_builds_and_mass_readout() {
         let m = parse_model(DEMO, "demo.pcm").unwrap();
