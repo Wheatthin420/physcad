@@ -80,26 +80,52 @@ pub fn csg_demo_solid() -> Result<csg::Solid, String> {
     csg::evaluate(&m.graph).map_err(|e| e.to_string())
 }
 
-/// One-item scene holding the kernel-built CSG part, scaled mm -> scene
-/// units and resting on the ground plane.
+/// Kernel torus for the render gate — built by the same file grammar, at
+/// *render* tessellation (96x48; the 1e-6 analytic gates for tori live in
+/// crates/physcad/tests/m3_gates.rs).
+pub const TORUS_DEMO_SRC: &str = "ring = torus(8, 2, 96, 48)\n";
+
+pub fn torus_demo_solid() -> Result<csg::Solid, String> {
+    let m = parse_model(TORUS_DEMO_SRC, "render-torus.pcm").map_err(|e| e.to_string())?;
+    csg::evaluate(&m.graph).map_err(|e| e.to_string())
+}
+
+/// Kernel-built parts: the bore-plate plus a standing torus ring, scaled
+/// mm -> scene units and resting on the ground plane.
 pub fn csg_demo_scene() -> Result<Vec<SceneItem>, String> {
     let model = parse_model(DEMO_MODEL_SRC, DEMO_MODEL_NAME).map_err(|e| e.to_string())?;
     let s = csg::evaluate(&model.graph).map_err(|e| e.to_string())?;
+    let t = torus_demo_solid()?;
     let scale = 0.05f32; // 60 mm -> 3 scene units
-    Ok(vec![SceneItem {
-        name: "bore-plate (CSG)",
-        mesh: s.mesh.clone(),
-        translation: Vec3::new(0.0, 6.0 * scale, 0.0), // half plate height in scene units
-        scale,
-        color: [0.30, 0.45, 0.80],
-        info: format!(
-            "V {:.1} mm^3 | m {:.1} g | genus {} | {} tris",
-            s.volume_mm3,
-            s.mass_g(model.density_g_cm3),
-            s.genus,
-            s.num_tri
-        ),
-    }])
+    Ok(vec![
+        SceneItem {
+            name: "bore-plate (CSG)",
+            mesh: s.mesh.clone(),
+            translation: Vec3::new(0.0, 6.0 * scale, 0.0), // half plate height in scene units
+            scale,
+            color: [0.30, 0.45, 0.80],
+            info: format!(
+                "V {:.1} mm^3 | m {:.1} g | genus {} | {} tris",
+                s.volume_mm3,
+                s.mass_g(model.density_g_cm3),
+                s.genus,
+                s.num_tri
+            ),
+        },
+        SceneItem {
+            name: "torus ring (CSG)",
+            mesh: t.mesh,
+            // R=8, tube=2 mm -> outer dia 20 mm -> 1.0 scene unit; center at
+            // tube radius so the ring rests flat on the ground plane.
+            translation: Vec3::new(2.4, 2.0 * scale, 2.2),
+            scale,
+            color: [0.80, 0.52, 0.25],
+            info: format!(
+                "V {:.1} mm^3 | genus {} | {} tris",
+                t.volume_mm3, t.genus, t.num_tri
+            ),
+        },
+    ])
 }
 
 /// Flat ribbon for one polyline of the solved sketch: quads on the y=lift
@@ -236,13 +262,26 @@ mod tests {
     #[test]
     fn csg_demo_scene_mesh_is_closed_and_volumes_match_kernel() {
         let items = csg_demo_scene().expect("demo model must build");
-        assert_eq!(items.len(), 1);
-        let (v, e, f) = items[0].mesh.closed_manifold_check().unwrap();
-        // Euler characteristic 2 for the genus-1 bored plate would be 0
-        // only as a closed surface of a torus; a through-hole plate is
-        // topologically a torus: chi = 0.
-        let chi = v as i64 - e as i64 + f as i64;
-        assert_eq!(chi, 0, "bored plate is torus topology, chi={chi}");
+        assert_eq!(items.len(), 2);
+        for item in &items {
+            let (v, e, f) = item.mesh.closed_manifold_check().unwrap();
+            let chi = v as i64 - e as i64 + f as i64;
+            // Bored plate (genus 1 through-hole) and solid torus ring both
+            // have single-shell chi = 0.
+            assert_eq!(chi, 0, "{}: single genus-1 shell", item.name);
+        }
+        // Kernel torus vs analytic 2*pi^2*R*r^2 at RENDER tessellation
+        // (96x48): inscribed-polygon slop is ~1e-3 relative here — the
+        // 1e-6 analytic gates run in crates/physcad/tests/m3_gates.rs.
+        let t = torus_demo_solid().unwrap();
+        let analytic = 2.0 * std::f64::consts::PI * std::f64::consts::PI * 8.0 * 2.0 * 2.0;
+        let rel = (t.volume_mm3 - analytic).abs() / analytic;
+        eprintln!(
+            "render torus: kernel V={:.4} analytic {analytic:.4} rel {rel:.3e}, genus {}",
+            t.volume_mm3, t.genus
+        );
+        assert!(rel < 2e-2, "render-tessellation torus rel {rel:.3e}");
+        assert_eq!(t.genus, 1, "kernel torus is genus 1");
     }
 
     #[test]

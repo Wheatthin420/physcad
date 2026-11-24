@@ -8,6 +8,7 @@
 //!   NAME = box(W, H, D)
 //!   NAME = cylinder(R, H, SEGS)
 //!   NAME = sphere(R, RINGS, SEGS)
+//!   NAME = torus(RING_R, TUBE_R, MAJOR_SEGS, MINOR_SEGS)
 //!   NAME = move(NODE, X, Y, Z)
 //!   NAME = union(A, B) | cut(A, B) | intersect(A, B)
 //!
@@ -524,6 +525,7 @@ pub fn parse_model(src: &str, file: &str) -> Result<Model, ModelError> {
         // wrong error ("unknown variable"), so classify before evaluating.
         let sig: &[ArgKind] = match call.as_str() {
             "box" | "cylinder" | "sphere" => &[ArgKind::Num, ArgKind::Num, ArgKind::Num],
+            "torus" => &[ArgKind::Num, ArgKind::Num, ArgKind::Num, ArgKind::Num],
             "move" => &[ArgKind::Node, ArgKind::Num, ArgKind::Num, ArgKind::Num],
             "union" | "cut" | "intersect" => &[ArgKind::Node, ArgKind::Node],
             other => {
@@ -605,6 +607,12 @@ pub fn parse_model(src: &str, file: &str) -> Result<Model, ModelError> {
                 r: vals[0],
                 rings: int_arg(1, 2, vals[1])?,
                 segs: int_arg(2, 3, vals[2])?,
+            },
+            "torus" => GeoNode::Torus {
+                r: vals[0],
+                tube: vals[1],
+                major_segs: int_arg(2, 3, vals[2])?,
+                minor_segs: int_arg(3, 3, vals[3])?,
             },
             "move" => GeoNode::Move {
                 node: idx[0],

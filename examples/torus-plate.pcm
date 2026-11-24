@@ -1,0 +1,19 @@
+# torus-plate.pcm — PhysCAD M3 torus CSG demo part (units: mm)
+# 40x6x40 plate with a through-bore and a raised torus collar standing
+# half-embedded in the top face around the bore. Cross-process
+# determinism evidence for the torus path (see docs/MILESTONES.md).
+density = 7.85
+
+param plate_w = 40
+param t       = 6
+param bore_r  = 3
+param ring_r  = 12
+param tube_r  = 2
+
+plate   = box(plate_w, t, plate_w)
+bore    = cylinder(bore_r, t + 4, 96)
+ring    = torus(ring_r, tube_r, 128, 64)
+ring_h  = move(ring, 0, t / 2, 0)
+
+stem = union(plate, ring_h)
+part = cut(stem, bore)

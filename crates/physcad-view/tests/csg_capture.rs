@@ -28,7 +28,9 @@ fn csg_demo_part_renders_headless() {
 
     // The CSG part is steel-blue (0.30, 0.45, 0.80 * Lambert): count its
     // pixels and require a believable silhouette near the frame center.
-    let (mut blue, mut total) = (0u32, 0u32);
+    // The kernel torus ring is copper (0.80, 0.52, 0.25 * Lambert) and
+    // must also show up — proof the torus path renders, not just builds.
+    let (mut blue, mut copper, mut total) = (0u32, 0u32, 0u32);
     let mut xs = Vec::new();
     for (x, y, px) in rgba.enumerate_pixels() {
         let [r, g, b, _] = px.0;
@@ -45,13 +47,17 @@ fn csg_demo_part_renders_headless() {
             xs.push(x);
             let _ = y;
         }
+        if r as i16 > b as i16 + 40 && r as i16 >= g as i16 + 20 && g as i16 > b as i16 {
+            copper += 1;
+        }
     }
     let span = xs.iter().max().unwrap() - xs.iter().min().unwrap();
-    eprintln!("off-bg px: {total}, CSG blue px: {blue}, x-span: {span}");
+    eprintln!("off-bg px: {total}, CSG blue px: {blue}, copper px: {copper}, x-span: {span}");
     assert!(
         blue > 2000,
         "CSG part must cover a solid silhouette: {blue} px"
     );
+    assert!(copper > 200, "kernel torus ring must render: {copper} px");
     assert!(
         (100..400).contains(&span),
         "part should span a plausible width (got {span} px)"

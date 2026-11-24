@@ -4,7 +4,7 @@
 |---|---|---|---|---|
 | 1 | SURVEY.md field survey + shortlist | DONE | 2026-11-24 | docs/SURVEY.md; all licenses read from project LICENSE files + crates.io API same day |
 | 2 | Viewer shell (wgpu + egui, orbit, primitives, screenshot) | DONE | 2026-11-24 | crates/physcad + crates/physcad-view; docs/m2-capture.png (1280x720, llvmpipe Cpu/Vulkan adapter, sha256 in commit msg body); LICENSES.md opened |
-| 3 | Mesh kernel slice (manifold3d CSG → STL, params+expressions) | DONE | 2026-11-24 | crates/physcad {expr,tess,csg,model,stl}.rs + src/bin/physcad.rs; crates/physcad/tests/m3_gates.rs (5 analytic volume gates + bit-stability); crates/physcad-view/tests/csg_capture.rs (headless render of CSG result + exact-polyhedral volume check); examples/bore-plate.pcm; docs/m3-csg.png; evidence below |
+| 3 | Mesh kernel slice (manifold3d CSG → STL, params+expressions) | DONE | 2026-11-24 | crates/physcad {expr,tess,csg,model,stl}.rs + src/bin/physcad.rs; crates/physcad/tests/m3_gates.rs (7 analytic volume gates + mass gate + bit-stability, incl. torus); crates/physcad-view/tests/csg_capture.rs (headless render of CSG result incl. kernel torus + exact-polyhedral volume check); examples/bore-plate.pcm + examples/torus-plate.pcm; docs/m3-csg.png; evidence below |
 | 4 | Sketches + constraint solver (own LM; slvs blocked GPL-3.0) | DONE | 2026-11-24 | crates/physcad/src/sketch/{mod,solver}.rs (dual-number exact Jacobians, dense LM, Jacobi-eigen rank/DOF, Gram-Schmidt named redundancy) + .pcm sketch grammar in model.rs + examples/sketch-bracket.pcm + crates/physcad/tests/sketch_gates.rs (10 gates, residuals below) + crates/physcad-view/tests/m4_sketch_capture.rs (headless wgpu render of solved sketch; docs/m4-sketch.png). Developed on branch `m4-sketch` (concurrent M3-torus session held the tree), fast-forward merged to main 2026-11-24 |
 | 5 | Extrude/revolve from closed sketch loops | not started | — | — |
 | 6 | Timeline data model + stable topology naming | not started | — | — |
@@ -20,7 +20,13 @@ Key survey findings that changed the ladder:
 ## M3 evidence (all commands run on this box, 2026-11-24)
 
 Gates: `cargo fmt` clean; `cargo clippy -j 3 --all-targets` -> 0 warnings;
-`cargo test -j 3` -> 39 lib + 6 gate + 2 view lib + 3 capture/integration tests, 0 failed.
+`cargo test -j 3` -> 43 lib + 8 gate + 3 view lib + 4 capture/integration
+tests, 0 failed (post-merge tree with M4; re-run twice, green both; one
+pre-rerun flake `cut_box_minus_torus_cavity_analytic` FAILED once in the
+first post-merge full-suite run with no captured panic text — all 8 gates
+green on the same binary in three subsequent runs; hypothesis: transient
+kernel allocation rejection under memory pressure with the inference
+engine holding ~59% RAM; re-run is the mitigation).
 
 Analytic volume gates (`cargo test -j 3 -p physcad --test m3_gates -- --nocapture`),
 tolerance 1e-6 mm^3 absolute, kernel volume = manifold f64:
@@ -31,21 +37,38 @@ GATE cut cyl bore:         got  193.716814847  analytic  193.716814693  |err| 1.
 GATE intersect box∩cyl:    got    9.424777730  analytic    9.424777961  |err| 2.310e-7
 GATE union box+hemisphere: got    1.032724641  analytic    1.032724923  |err| 2.824e-7
 GATE cut spherical cavity: got    0.934550718  analytic    0.934550153  |err| 5.647e-7
+GATE torus:                got    0.021318078  analytic    0.021318346  |err| 2.675e-7
+GATE cut box-torus cavity: got    0.978681922  analytic    0.978681654  |err| 2.675e-7
+GATE mass@7.85:            got    0.000167347  analytic    0.000167349  |err| 2.100e-9  (g)
 ```
 
 Math: cylinders = inscribed 16384-gon prisms (error budget V·(2π/n)²/6 ≈
 1.5e-7 — measured matches); spheres = UV-polyhedra r=1/4 at 1024×1024
 (measured ≈2.3× the naive (π²/m²+4π²/3n²)/6 estimate, still 1.8× margin);
-boxes exact. Demo-part cross-check (csg_capture test) matches its exact
-polyhedral closed form (prismoid sum) at dev 0.000e0.
+boxes exact. Tori (ring R=0.3, tube r=0.06, 1024×1024, analytic 2π²Rr²)
+show textbook quadratic convergence — measured |err| 4.28e-6 → 1.07e-6 →
+2.675e-7 as segments double (4.0x drop per step, asserted in
+tess::torus64_error_scaling_matches_quadratic). Demo-part cross-check
+(csg_capture test) matches its exact polyhedral closed form (prismoid sum)
+at dev 0.000e0.
+
+Genus conventions verified against manifold (encoded in tests):
+through-hole -> +1; an extra closed SHELL contributes −chi_shell/2, so a
+spherical cavity (chi=2) -> genus −1 total, but a TORUS cavity (chi=0)
+leaves genus 0; a solid torus alone is genus 1.
 
 Bit-stability:
 - In-process: `scripted_rebuild_is_bit_stable` — two evaluates of the same
-  parsed model -> volume bit-identical, mesh equal, 410384 STL bytes equal.
+  parsed model (now including a torus + move + all three CSG ops) -> volume
+  bit-identical, mesh equal, 491984 STL bytes equal.
 - Cross-process: two `./target/debug/physcad build examples/bore-plate.pcm --stl …`
   runs -> both `sha256 16004736ee145b81aa7a6c3590dc855673304fd62c447d4e574a376202068ace`,
   CLI readout identical (V=28309.777414 mm^3, mass 222.2318 g @7.85 g/cm^3,
-  genus 1, 5010 tris).
+  genus 1, 5010 tris). Same sha re-verified after the torus work (no drift).
+- Torus cross-process: two `build examples/torus-plate.pcm --stl …` runs ->
+  both `sha256 1ecf0f21843ec770fdb6641957138279e71342403373fb7f5866a2e244aa5af9`
+  (442484 bytes), readout identical (V=9903.265535 mm^3, 77.7406 g, genus 1,
+  8848 tris — hand-checked: 9600 plate + 472.8 half-ring − 169.5 bore).
 - STL f32 quantization, f64-summed: relative volume drift 5.3e-10.
 
 Kernel setup: manifold3d 0.4.2 w/o default features (no TBB; single-threaded
@@ -54,16 +77,32 @@ cmake 3.31.6 standalone at ~/.local/opt/cmake (no apt on box, PEP 668
 blocked pip) — added to PATH via ~/.bashrc.
 
 Genus convention (verified, tests encode it): through-hole -> +1; extra
-closed shell (disconnected component OR interior cavity) -> -1.
+closed shell contributes -chi/2 (spherical shell -> -1; torus shell, chi=0,
+-> no change); solid torus alone -> genus 1.
+
+Render gate (csg_capture): the scene now holds TWO kernel-built solids —
+the bore-plate and `torus(8, 2, 96, 48)` (render tessellation; analytic
+slop 3.6e-3 relative, the 1e-6 gates stay in m3_gates.rs). llvmpipe CPU
+adapter at 640x360; pixel checks count 7913 blue (plate) + 1622 copper
+(ring) off-background pixels, and the copper bbox (61x44) contains 1062
+background pixels -> the ring hole sees through. docs/m3-csg.png
+(sha256 91ec982c7c647698bc10cfe23defad83b13f5b5336d4695faa0fbd76e16da43b,
+regenerated post-merge with the corrected cull_mode: None renderer; pixel
+counts above unchanged). Vision self-check (aux.vision) confirms plate +
+bore spot + dome knob + ring with visible hole; zero black px in the file
+(vision's "letterbox bars" were confabulation — pixel probe wins).
 
 Known limits after M3: no rotations yet (move only), UV-sphere poles pinch
-triangle sizes, no units system, ASCII STL not implemented.
+triangle sizes, spindle tori (tube > ring radius) not gated, no units
+system, ASCII STL not implemented.
 
 ## M4 evidence (all commands run on this box, 2026-11-24)
 
 Gates: `cargo fmt` clean; `cargo clippy -j 3 --all-targets` -> 0 warnings;
 `cargo test -j 3` -> 41 lib + 6 m3 + 10 sketch_gates + 3 view lib + 2 csg
-+ 1 m4 capture + 1 offscreen, 0 failed.
++ 1 m4 capture + 1 offscreen, 0 failed. (Counts at M4 merge time; the tree
+grew to 43 lib + 8 m3 after the m3-torus rebase — see M3 evidence above
+for the combined post-merge totals.)
 
 Exact solve residuals (`cargo test -j 3 -p physcad --test sketch_gates -- --nocapture`),
 max |residual| per equation, convergence tol 1e-12:

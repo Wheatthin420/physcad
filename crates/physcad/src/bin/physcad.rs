@@ -44,6 +44,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
             csg::GeoNode::Box { .. } => "box",
             csg::GeoNode::Cylinder { .. } => "cylinder",
             csg::GeoNode::Sphere { .. } => "sphere",
+            csg::GeoNode::Torus { .. } => "torus",
             csg::GeoNode::Move { .. } => "move",
             csg::GeoNode::Union { .. } => "union",
             csg::GeoNode::Cut { .. } => "cut",

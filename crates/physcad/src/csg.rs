@@ -13,7 +13,7 @@ use std::collections::{BTreeMap, HashMap};
 use manifold3d::Manifold;
 
 use crate::primitives::Mesh;
-use crate::tess::{Mesh64, box64, cylinder64, sphere64};
+use crate::tess::{Mesh64, box64, cylinder64, sphere64, torus64};
 
 /// One node of the geometry graph. Operands are indices into the same
 /// `GeoGraph::nodes` vector and are always < the node's own index (the
@@ -34,6 +34,14 @@ pub enum GeoNode {
         r: f64,
         rings: usize,
         segs: usize,
+    },
+    /// Torus around +Y: tube of radius `tube` swept along a circle of
+    /// radius `r` in the XZ plane (matches `cylinder64`'s axis).
+    Torus {
+        r: f64,
+        tube: f64,
+        major_segs: usize,
+        minor_segs: usize,
     },
     Move {
         node: usize,
@@ -248,6 +256,20 @@ pub fn evaluate(graph: &GeoGraph) -> Result<Solid, KernelError> {
                     )));
                 }
                 mesh_to_manifold(&sphere64(*r, *rings, *segs))?
+            }
+            GeoNode::Torus {
+                r,
+                tube,
+                major_segs,
+                minor_segs,
+            } => {
+                dim_ok(name, &[("ring radius", *r), ("tube radius", *tube)])?;
+                if *major_segs < 3 || *minor_segs < 3 {
+                    return Err(KernelError(format!(
+                        "{name}: torus needs major/minor segs >= 3"
+                    )));
+                }
+                mesh_to_manifold(&torus64(*r, *tube, *major_segs, *minor_segs))?
             }
             GeoNode::Move { node, x, y, z } => cache[*node]
                 .as_ref()

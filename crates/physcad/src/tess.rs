@@ -177,6 +177,43 @@ pub fn sphere64(radius: f64, rings: usize, segs: usize) -> Mesh64 {
     m
 }
 
+/// Torus around +Y (same axis convention as `cylinder64`): a tube of
+/// radius `tube` swept along a circle of radius `r` in the XZ plane.
+/// Fully closed grid: every vertex is pushed exactly once and quads wrap
+/// modulo in both directions, so seams share bits by construction (M2
+/// lesson) — there is no seam angle re-evaluated at all.
+pub fn torus64(r: f64, tube: f64, major_segs: usize, minor_segs: usize) -> Mesh64 {
+    assert!(r > 0.0 && tube > 0.0, "torus radii must be positive");
+    assert!(
+        major_segs >= 3 && minor_segs >= 3,
+        "torus needs >= 3 segments"
+    );
+    let dtheta = std::f64::consts::TAU / major_segs as f64;
+    let dphi = std::f64::consts::TAU / minor_segs as f64;
+    let at = |i: usize, j: usize| -> DVec3 {
+        let theta = (i % major_segs) as f64 * dtheta;
+        let phi = (j % minor_segs) as f64 * dphi;
+        let rho = r + tube * phi.cos();
+        DVec3::new(rho * theta.cos(), tube * phi.sin(), rho * theta.sin())
+    };
+    let mut m = Mesh64::default();
+    let grid: Vec<Vec<u32>> = (0..major_segs)
+        .map(|i| (0..minor_segs).map(|j| m.push_vert(at(i, j))).collect())
+        .collect();
+    // Winding: basis (u, v) = (phi direction, theta direction) satisfies
+    // u x v = n_out (hand-verified at theta=phi=0; asserted per face in
+    // module tests via the ring-center rule), corners walk
+    // a = p(i,j), b = p(i,j+1), c = p(i+1,j+1), d = p(i+1,j).
+    for i in 0..major_segs {
+        let i2 = (i + 1) % major_segs;
+        for j in 0..minor_segs {
+            let j2 = (j + 1) % minor_segs;
+            m.push_quad(grid[i][j], grid[i][j2], grid[i2][j2], grid[i2][j]);
+        }
+    }
+    m
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -244,5 +281,77 @@ mod tests {
         let m = sphere64(1.0, 4, 6);
         // 2n pole tris + (rings-2)*2n quad tris
         assert_eq!(m.indices.len() / 3, 2 * 6 + (4 - 2) * 2 * 6);
+        let m = torus64(1.0, 0.4, 8, 6);
+        assert_eq!(m.indices.len() / 3, 2 * 8 * 6);
+        assert_eq!(m.positions.len(), 8 * 6, "torus grid is welded");
+    }
+
+    /// The convex-body helper (`assert_outward_winding`) is invalid for a
+    /// torus: inner-equator faces point AT the origin. Torus rule instead:
+    /// every face normal must point away from the nearest point of the
+    /// center circle (radius r in the XZ plane).
+    fn assert_outward_winding_torus(m: &Mesh64, r: f64) {
+        for tri in m.indices.chunks(3) {
+            let p = [
+                DVec3::from(m.positions[tri[0] as usize]),
+                DVec3::from(m.positions[tri[1] as usize]),
+                DVec3::from(m.positions[tri[2] as usize]),
+            ];
+            let n = (p[1] - p[0]).cross(p[2] - p[0]);
+            let c = (p[0] + p[1] + p[2]) / 3.0;
+            let xz = DVec3::new(c.x, 0.0, c.z);
+            let q = xz.normalize() * r;
+            assert!(
+                n.dot(c - q) > 0.0,
+                "torus face winding must point away from the center circle"
+            );
+        }
+    }
+
+    #[test]
+    fn torus64_winding_closed_and_inscribed() {
+        let (r, tube) = (1.0, 0.25);
+        let m = torus64(r, tube, 48, 32);
+        assert_outward_winding_torus(&m, r);
+        let analytic = 2.0 * PI * PI * r * tube * tube;
+        let v = m.signed_volume();
+        // Inscribed in both directions (chords inside arcs) -> under-store.
+        assert!(
+            v < analytic,
+            "polygon torus must under-estimate: {v} vs {analytic}"
+        );
+        assert!(v > 0.0, "positive winding");
+    }
+
+    /// Measure discretization error vs the analytic 2*pi^2*R*r^2 at the
+    /// resolutions used by the M3 gates; with segments doubled ISOTROPICALLY
+    /// the error must drop more than 3x (true behavior is O(h^2) -> ~4x),
+    /// and the gate resolution must hold the 1e-6 absolute budget at 2x
+    /// margin.
+    #[test]
+    fn torus64_error_scaling_matches_quadratic() {
+        let (r, tube) = (0.3, 0.06);
+        let analytic = 2.0 * PI * PI * r * tube * tube;
+        let mut prev = 0.0;
+        for (label, n, m) in [
+            ("torus64 256x256", 256usize, 256usize),
+            ("torus64 512x512", 512, 512),
+            ("torus64 1024x1024", 1024, 1024),
+        ] {
+            let v = torus64(r, tube, n, m).signed_volume();
+            let err = (v - analytic).abs();
+            eprintln!("measure {label}: V {v:.9} vs analytic {analytic:.9}, |err| {err:.3e}");
+            if prev > 0.0 {
+                assert!(
+                    err * 3.0 < prev,
+                    "{label}: error must shrink >3x when segments double ({err:e} vs {prev:e})"
+                );
+            }
+            prev = err;
+        }
+        assert!(
+            prev * 2.0 < 1e-6,
+            "1024x1024 torus must hold >= 2x margin under the 1e-6 gate: {prev:e}"
+        );
     }
 }

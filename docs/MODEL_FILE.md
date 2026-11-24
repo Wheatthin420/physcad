@@ -14,16 +14,18 @@ Volumes mm^3; `density` in g/cm^3 (mass readout = density x volume/1000).
     plate  = box(plate_w, plate_h, 40)
     bore   = cylinder(bore_r, plate_h + 4, 96)   # around +Y, centered
     knob   = sphere(6, 48, 96)                   # UV sphere r, rings, segs
+    ring   = torus(12, 2, 128, 64)               # +Y axis: ring r, tube r, segs
     knob_h = move(knob, plate_w/4, plate_h/2, 0)
     stem   = union(plate, knob_h)
     part   = cut(stem, bore)                     # part is the root
 
 Grammar: `box(w,h,d)`, `cylinder(r,h,segs)`, `sphere(r,rings,segs)`,
+`torus(ring_r,tube_r,major_segs,minor_segs)`,
 `move(node,x,y,z)`, `union(a,b)`, `cut(a,b)` (= a minus b), `intersect(a,b)`.
 Node operands are bare names and must be defined above (declaration order =
 dependency order; the file parses to a DAG of typed nodes, never re-parsed
 at draw time). Segment counts must be whole numbers (cylinder segs >= 3,
-sphere rings >= 2 segs >= 3, cap 4_000_000).
+sphere rings >= 2 segs >= 3, torus major/minor segs >= 3, cap 4_000_000).
 
 Expressions: + - * / % ^ (right-assoc), unary +/-, parentheses, identifiers
 (= params, plus built-ins pi tau e), functions:
