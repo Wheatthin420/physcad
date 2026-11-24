@@ -1,0 +1,28 @@
+[package]
+name = "physcad-view"
+description = "Viewer shell: eframe/egui window with orbit camera + headless wgpu capture"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+name = "physcad_view"
+path = "src/lib.rs"
+
+[[bin]]
+name = "physcad-view"
+path = "src/main.rs"
+
+[dependencies]
+physcad.workspace = true
+glam.workspace = true
+wgpu.workspace = true
+egui.workspace = true
+eframe.workspace = true
+bytemuck.workspace = true
+image.workspace = true
+pollster.workspace = true
+
+[lints]
+workspace = true

@@ -3,7 +3,7 @@
 | # | Milestone | Status | Date | Evidence |
 |---|---|---|---|---|
 | 1 | SURVEY.md field survey + shortlist | DONE | 2026-11-24 | docs/SURVEY.md; all licenses read from project LICENSE files + crates.io API same day |
-| 2 | Viewer shell (wgpu + egui, orbit, primitives, screenshot) | not started | — | — |
+| 2 | Viewer shell (wgpu + egui, orbit, primitives, screenshot) | DONE | 2026-11-24 | crates/physcad + crates/physcad-view; docs/m2-capture.png (1280x720, llvmpipe Cpu/Vulkan adapter, sha256 in commit msg body); LICENSES.md opened |
 | 3 | Mesh kernel slice (manifold3d CSG → STL, params+expressions) | not started | — | — |
 | 4 | Sketches + constraint solver (own LM; slvs blocked GPL-3.0) | not started | — | — |
 | 5 | Extrude/revolve from closed sketch loops | not started | — | — |
