@@ -37,7 +37,7 @@ impl ViewerApp {
 impl eframe::App for ViewerApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         egui::Panel::left("controls").show(ui, |ui| {
-            ui.heading("PhysCAD — M3 (CSG kernel)");
+            ui.heading("PhysCAD — M4 (sketch solver)");
             ui.separator();
             for (i, item) in self.scene.iter().enumerate() {
                 ui.checkbox(&mut self.visible[i], item.name);
@@ -159,7 +159,7 @@ pub fn run() -> eframe::Result {
     let opts = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1180.0, 720.0])
-            .with_title("PhysCAD — CSG viewer (M3)"),
+            .with_title("PhysCAD — sketch + CSG viewer (M4)"),
         renderer: eframe::Renderer::Wgpu,
         ..Default::default()
     };
@@ -167,9 +167,10 @@ pub fn run() -> eframe::Result {
         "physcad-view",
         opts,
         Box::new(|_cc| {
-            // CSG result first (visible), then the M2 primitives for
-            // comparison; the cylinder hides behind the CSG part.
-            let mut scene = crate::scene::csg_demo_scene().unwrap_or_default();
+            // Solved sketch first (the M4 result), CSG part next,
+            // M2 primitives behind for scale comparison.
+            let mut scene = crate::scene::sketch_demo_scene().unwrap_or_default();
+            scene.extend(crate::scene::csg_demo_scene().unwrap_or_default());
             scene.extend(crate::scene::sample_scene());
             Ok(Box::new(ViewerApp::new(scene)))
         }),

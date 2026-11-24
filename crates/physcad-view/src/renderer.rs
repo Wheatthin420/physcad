@@ -200,7 +200,13 @@ pub fn render_scene_png(
             topology: wgpu::PrimitiveTopology::TriangleList,
             strip_index_format: None,
             front_face: wgpu::FrontFace::Ccw,
-            cull_mode: Some(wgpu::Face::Front),
+            // No culling (M4 finding): our meshes are CCW-as-seen-from-
+            // outside, and with a y-down framebuffer this rasterizer's
+            // `cull_mode: Front` culls exactly the camera-facing surfaces
+            // (visible on flat ribbons: nothing drew). Closed solids still
+            // resolve correctly through the depth test, and open/flat
+            // geometry (sketch curves) needs to survive from either side.
+            cull_mode: None,
             unclipped_depth: false,
             polygon_mode: wgpu::PolygonMode::Fill,
             conservative: false,

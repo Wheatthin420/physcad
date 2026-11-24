@@ -1,0 +1,46 @@
+# M4 demo — parametric sketch in a .pcm file, solved by our own LM solver.
+# Units mm. Initial point coordinates are deliberately sloppy; the solver
+# pulls the profile exact. Expect: fully constrained (dof 0).
+
+density = 7.85
+param w = 80
+param h = 48
+param fil = 12
+
+br = newsketch()
+
+# --- rectangle a-b-c-d ---
+a = point(br, 5, 5)
+b = point(br, 90, 3)
+c = point(br, 85, 55)
+d = point(br, 2, 50)
+ab = line(br, a, b)
+bc = line(br, b, c)
+cd = line(br, c, d)
+da = line(br, d, a)
+anchor = fix(a, 0, 0)
+ab_h = horizontal(ab)
+bc_v = vertical(bc)
+cd_h = horizontal(cd)
+da_v = vertical(da)
+width = distance(a, b, w)
+height = distance(b, c, h)
+
+# --- fillet circle tangent to the bottom and right edges ---
+oc = point(br, 30, 30)
+fillet = circle(br, oc, 3)
+t_bottom = tangent(fillet, ab)
+t_right = tangent(fillet, bc)
+f_r = radius(fillet, fil)
+
+# --- quarter arc at the top-left interior ---
+ac = point(br, 20, 30)
+ast = point(br, 30, 30)
+aend = point(br, 20, 40)
+qa = arc(br, ac, ast, aend)
+ac_f = fix(ac, 20, 30)
+ast_f = fix(ast, 30, 30)
+aend_f = fix(aend, 20, 40)
+
+# --- keep a solid in the file so the M3 CSG readout still runs ---
+plate = box(w, h, 8)

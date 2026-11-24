@@ -40,3 +40,31 @@ Determinism contract: same file + same binary => bit-identical volume,
 mesh and STL bytes (single-threaded manifold, fixed STL header, no
 timestamps). Verified in tests/m3_gates.rs and cross-process in
 MILESTONES.md.
+
+## M4 sketch statements
+
+Same line-based grammar; sketch entities/constraints are statements of
+their own (they do not enter the CSG graph; the solid root stays the
+last *geometry node*):
+
+    sk = newsketch()                 # opens a sketch; names live in the file namespace
+    p  = point(sk, X, Y)             # 2 DOF each
+    l  = line(sk, P1, P2)            # endpoints are point entities (shared structure, not params)
+    c  = circle(sk, CENTER, R)       # center point entity + 1 own param (radius)
+    a  = arc(sk, CENTER, START, END) # three point entities; CCW sweep start->end
+    co = coincident(P1, P2)          # 2 eqs
+    d  = distance(P1, P2, EXPR)      # mm
+    an = angle(L1, L2, DEG)          # signed CCW from dir(L1) to dir(L2), degrees
+    h  = horizontal(L) | v = vertical(L)
+    r  = radius(C, EXPR)             # circle or arc (arc radius = |start-center|)
+    t  = tangent(L, C) | tangent(L, ARC) | tangent(C1, C2)  # cc = external
+    f  = fix(P, X, Y)                # anchor
+
+Operand names must be declared above; all operands of one constraint
+must belong to one sketch. Values are f64 expressions over earlier
+`param`s. Solve report per sketch: eqs, params, rank, dof, max|residual|,
+named redundant constraints — printed by `physcad build` (a sketch that
+fails to converge is a warning, not a build error, until features need it).
+
+Example: examples/sketch-bracket.pcm (rectangle + fillet circle tangent
+to two edges + quarter arc; 17 eqs / 17 params -> dof 0, max|res| 5.7e-14).

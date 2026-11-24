@@ -36,7 +36,6 @@ fn run(args: Vec<String>) -> Result<(), String> {
 
     let src = std::fs::read_to_string(&file).map_err(|e| format!("cannot read {file}: {e}"))?;
     let m = model::parse_model(&src, &file).map_err(|e| e.to_string())?;
-    let s = csg::evaluate(&m.graph).map_err(|e| e.to_string())?;
 
     println!("model:        {file}");
     println!("nodes:        {}", m.graph.nodes.len());
@@ -52,7 +51,40 @@ fn run(args: Vec<String>) -> Result<(), String> {
         };
         println!("  #{i:<2} {name:<12} {kind}");
     }
-    println!("root:         {}", m.graph.nodes[m.graph.root().unwrap()].0);
+
+    // M4: solve every sketch in the file; diagnostics, never a panic.
+    if !m.sketches.is_empty() {
+        println!("sketches:     {}", m.sketches.len());
+    }
+    for sk in &m.sketches {
+        let (_solved, rep) = physcad::sketch::solver::solve(sk);
+        println!(
+            "  {} ({} entities, {} constraints): {}",
+            sk.name,
+            sk.entities.len(),
+            sk.constraints.len(),
+            rep
+        );
+        if rep.status != physcad::sketch::solver::SolveStatus::Solved {
+            eprintln!(
+                "warning: sketch {:?} did not converge: {}",
+                sk.name, rep.message
+            );
+        }
+        if rep.dof > 0 {
+            eprintln!(
+                "note: sketch {:?} under-constrained: {} dof",
+                sk.name, rep.dof
+            );
+        }
+    }
+
+    let Some(root) = m.graph.root() else {
+        // sketch-only file: the readout above is the whole story
+        return Ok(());
+    };
+    println!("root:         {}", m.graph.nodes[root].0);
+    let s = csg::evaluate(&m.graph).map_err(|e| e.to_string())?;
     println!("volume_mm3:   {:.6}", s.volume_mm3);
     println!(
         "mass_g:       {:.4}   (density {:.3} g/cm^3)",

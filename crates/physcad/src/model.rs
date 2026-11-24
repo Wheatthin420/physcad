@@ -10,6 +10,16 @@
 //!   NAME = sphere(R, RINGS, SEGS)
 //!   NAME = move(NODE, X, Y, Z)
 //!   NAME = union(A, B) | cut(A, B) | intersect(A, B)
+//!
+//!   # --- M4: sketches (entities + constraints; solved on demand) ---
+//!   NAME = newsketch()
+//!   NAME = point(SKETCH, X, Y)
+//!   NAME = line(SKETCH, P1, P2)          # endpoints are point entities
+//!   NAME = circle(SKETCH, CENTER, R)
+//!   NAME = arc(SKETCH, CENTER, START, END)
+//!   NAME = coincident(P1, P2) | distance(P1, P2, D) | angle(L1, L2, DEG)
+//!   NAME = horizontal(L) | vertical(L) | radius(C, R) | fix(P, X, Y)
+//!   NAME = tangent(L, C) | tangent(L, ARC) | tangent(C1, C2)
 //! ```
 //!
 //! The root of the solid is the LAST node defined. Units: millimetres.
@@ -22,6 +32,7 @@ use std::fmt;
 
 use crate::csg::{GeoGraph, GeoNode};
 use crate::expr;
+use crate::sketch::{Constraint, Entity, Sketch};
 
 #[derive(Clone, Debug)]
 pub struct ModelError {
@@ -44,6 +55,8 @@ pub struct Model {
     pub name: String,
     pub density_g_cm3: f64,
     pub graph: GeoGraph,
+    /// M4: sketches declared in the same file (solved on demand).
+    pub sketches: Vec<Sketch>,
 }
 
 /// Split arg list at top-level commas (nesting-aware; exprs may contain
@@ -89,6 +102,9 @@ fn parse_call(rhs: &str) -> Result<(String, Vec<String>), (usize, String)> {
         return Err((t.len(), "call must end with ')'".into()));
     }
     let inner = &t[open + 1..t.len() - 1];
+    if inner.trim().is_empty() {
+        return Ok((head.to_string(), Vec::new()));
+    }
     let args = split_args(inner)?;
     Ok((head.to_string(), args))
 }
@@ -113,11 +129,320 @@ enum ArgKind {
     Node,
 }
 
+/// True if `call` is one of the M4 sketch statements (handled outside the
+/// geometry-node path).
+fn is_sketch_call(call: &str) -> bool {
+    matches!(
+        call,
+        "newsketch"
+            | "point"
+            | "line"
+            | "circle"
+            | "arc"
+            | "coincident"
+            | "distance"
+            | "angle"
+            | "horizontal"
+            | "vertical"
+            | "radius"
+            | "tangent"
+            | "fix"
+    )
+}
+
+fn sketch_arg_ident(
+    arg: &str,
+    file: &str,
+    lineno: usize,
+    what: &str,
+) -> Result<String, ModelError> {
+    ident(arg).ok_or_else(|| ModelError {
+        file: file.to_string(),
+        line: lineno,
+        col: 1,
+        msg: format!("{what}: operand {arg:?} is not a plain identifier"),
+    })
+}
+
+/// Apply one sketch statement to the model's sketch list. Entity names
+/// share the global namespace with geometry nodes (duplicate = error).
+#[allow(clippy::too_many_arguments)] // parser context bundle, not an API
+fn apply_sketch_call(
+    call: &str,
+    name: &str,
+    args: &[String],
+    lineno: usize,
+    file: &str,
+    params: &BTreeMap<String, f64>,
+    graph: &GeoGraph,
+    sketches: &mut Vec<Sketch>,
+    ent_names: &mut BTreeMap<String, (usize, usize)>,
+) -> Result<(), ModelError> {
+    let err = |col: usize, msg: String| ModelError {
+        file: file.to_string(),
+        line: lineno,
+        col,
+        msg,
+    };
+    let argc = |want: usize| -> Result<(), ModelError> {
+        if args.len() != want {
+            return Err(err(
+                1,
+                format!("{call}() takes {want} arguments, got {}", args.len()),
+            ));
+        }
+        Ok(())
+    };
+    let num = |s: &str| -> Result<f64, ModelError> {
+        let e = expr::parse(s).map_err(|e| err(e.col, e.msg))?;
+        let v = e.eval(params).map_err(|e| err(e.col, e.msg))?;
+        if !v.is_finite() {
+            return Err(err(1, format!("{call} {name}: value is not finite")));
+        }
+        Ok(v)
+    };
+    let find_sk = |n: &str| -> Result<usize, ModelError> {
+        let n = sketch_arg_ident(n, file, lineno, call)?;
+        sketches.iter().position(|s| s.name == n).ok_or_else(|| {
+            err(
+                1,
+                format!("{call}: {n:?} is not a sketch (declare `NAME = newsketch()` above)"),
+            )
+        })
+    };
+    let find_ent = |n: &str| -> Result<(usize, usize), ModelError> {
+        let n = sketch_arg_ident(n, file, lineno, call)?;
+        ent_names.get(&n).copied().ok_or_else(|| {
+            err(
+                1,
+                format!("{call}: entity {n:?} is not defined (entities must be declared above)"),
+            )
+        })
+    };
+    if call != "newsketch"
+        && (graph.find(name).is_some()
+            || ent_names.contains_key(name)
+            || sketches.iter().any(|s| s.name == name))
+    {
+        return Err(err(1, format!("name {name:?} defined twice")));
+    }
+    match call {
+        "newsketch" => {
+            argc(0)?;
+            if sketches.iter().any(|s| s.name == name) {
+                return Err(err(1, format!("sketch {name:?} defined twice")));
+            }
+            sketches.push(Sketch::new(name));
+        }
+        "point" => {
+            argc(3)?;
+            let ski = find_sk(&args[0])?;
+            let (x, y) = (num(&args[1])?, num(&args[2])?);
+            let idx = sketches[ski]
+                .add_entity(name, Entity::Point { x, y })
+                .map_err(|e| err(1, e.to_string()))?;
+            ent_names.insert(name.to_string(), (ski, idx));
+        }
+        "line" => {
+            argc(3)?;
+            let ski = find_sk(&args[0])?;
+            let (sa, ia) = find_ent(&args[1])?;
+            let (sb, ib) = find_ent(&args[2])?;
+            same_sketch(sketches, call, ski, sa, sb, file, lineno)?;
+            let idx = sketches[ski]
+                .add_entity(name, Entity::Line { a: ia, b: ib })
+                .map_err(|e| err(1, e.to_string()))?;
+            ent_names.insert(name.to_string(), (ski, idx));
+        }
+        "circle" => {
+            argc(3)?;
+            let ski = find_sk(&args[0])?;
+            let (sc, ic) = find_ent(&args[1])?;
+            same_sketch(sketches, call, ski, sc, sc, file, lineno)?;
+            let r = num(&args[2])?;
+            let idx = sketches[ski]
+                .add_entity(
+                    name,
+                    Entity::Circle {
+                        center: ic,
+                        radius: r,
+                    },
+                )
+                .map_err(|e| err(1, e.to_string()))?;
+            ent_names.insert(name.to_string(), (ski, idx));
+        }
+        "arc" => {
+            argc(4)?;
+            let ski = find_sk(&args[0])?;
+            let (sc, ic) = find_ent(&args[1])?;
+            let (ss, is_) = find_ent(&args[2])?;
+            let (se, ie) = find_ent(&args[3])?;
+            same_sketch(sketches, call, ski, sc, ss, file, lineno)?;
+            same_sketch(sketches, call, ski, sc, se, file, lineno)?;
+            let idx = sketches[ski]
+                .add_entity(
+                    name,
+                    Entity::Arc {
+                        center: ic,
+                        start: is_,
+                        end: ie,
+                    },
+                )
+                .map_err(|e| err(1, e.to_string()))?;
+            ent_names.insert(name.to_string(), (ski, idx));
+        }
+        "coincident" => {
+            argc(2)?;
+            let (sa, ia) = find_ent(&args[0])?;
+            let (sb, ib) = find_ent(&args[1])?;
+            same_sketch(sketches, call, sa, sa, sb, file, lineno)?;
+            sketches[sa]
+                .add_constraint(name, Constraint::Coincident { a: ia, b: ib })
+                .map_err(|e| err(1, e.to_string()))?;
+        }
+        "distance" => {
+            argc(3)?;
+            let (sa, ia) = find_ent(&args[0])?;
+            let (sb, ib) = find_ent(&args[1])?;
+            same_sketch(sketches, call, sa, sa, sb, file, lineno)?;
+            let v = num(&args[2])?;
+            sketches[sa]
+                .add_constraint(
+                    name,
+                    Constraint::Distance {
+                        a: ia,
+                        b: ib,
+                        value: v,
+                    },
+                )
+                .map_err(|e| err(1, e.to_string()))?;
+        }
+        "angle" => {
+            argc(3)?;
+            let (sa, ia) = find_ent(&args[0])?;
+            let (sb, ib) = find_ent(&args[1])?;
+            same_sketch(sketches, call, sa, sa, sb, file, lineno)?;
+            let deg = num(&args[2])?;
+            sketches[sa]
+                .add_constraint(
+                    name,
+                    Constraint::Angle {
+                        a: ia,
+                        b: ib,
+                        radians: deg.to_radians(),
+                    },
+                )
+                .map_err(|e| err(1, e.to_string()))?;
+        }
+        "horizontal" | "vertical" => {
+            argc(1)?;
+            let (sa, ia) = find_ent(&args[0])?;
+            let c = if call == "horizontal" {
+                Constraint::Horizontal { l: ia }
+            } else {
+                Constraint::Vertical { l: ia }
+            };
+            sketches[sa]
+                .add_constraint(name, c)
+                .map_err(|e| err(1, e.to_string()))?;
+        }
+        "radius" => {
+            argc(2)?;
+            let (sa, ia) = find_ent(&args[0])?;
+            let v = num(&args[1])?;
+            sketches[sa]
+                .add_constraint(name, Constraint::Radius { c: ia, value: v })
+                .map_err(|e| err(1, e.to_string()))?;
+        }
+        "tangent" => {
+            argc(2)?;
+            let (sa, ia) = find_ent(&args[0])?;
+            let (sb, ib) = find_ent(&args[1])?;
+            same_sketch(sketches, call, sa, sa, sb, file, lineno)?;
+            // classify by entity kinds; order-insensitive pair match
+            let ka = entity_kind_name(sketches, sa, ia);
+            let kb = entity_kind_name(sketches, sb, ib);
+            let c = if ka == "line" || kb == "line" {
+                let (li, ci) = if ka == "line" { (ia, ib) } else { (ib, ia) };
+                let ck = if ka == "line" { kb } else { ka };
+                match ck {
+                    "circle" => Constraint::TangentLineCircle {
+                        line: li,
+                        circle: ci,
+                    },
+                    "arc" => Constraint::TangentLineArc { line: li, arc: ci },
+                    other => {
+                        return Err(err(
+                            1,
+                            format!(
+                                "tangent(line, {other}): use line+circle, line+arc or circle+circle"
+                            ),
+                        ));
+                    }
+                }
+            } else if ka == "circle" && kb == "circle" {
+                Constraint::TangentCircles { a: ia, b: ib }
+            } else {
+                return Err(err(
+                    1,
+                    format!("tangent({ka}, {kb}): use line+circle, line+arc or circle+circle"),
+                ));
+            };
+            sketches[sa]
+                .add_constraint(name, c)
+                .map_err(|e| err(1, e.to_string()))?;
+        }
+        "fix" => {
+            argc(3)?;
+            let (sa, ia) = find_ent(&args[0])?;
+            let (x, y) = (num(&args[1])?, num(&args[2])?);
+            sketches[sa]
+                .add_constraint(name, Constraint::Fix { p: ia, x, y })
+                .map_err(|e| err(1, e.to_string()))?;
+        }
+        _ => return Err(err(1, format!("unknown sketch call {call:?}"))),
+    }
+    Ok(())
+}
+
+fn same_sketch(
+    sketches: &[Sketch],
+    call: &str,
+    want: usize,
+    a: usize,
+    b: usize,
+    file: &str,
+    lineno: usize,
+) -> Result<(), ModelError> {
+    let off = |i: usize| ModelError {
+        file: file.to_string(),
+        line: lineno,
+        col: 1,
+        msg: format!(
+            "{call}: operand is in sketch {:?}, expected {:?}",
+            sketches[i].name, sketches[want].name
+        ),
+    };
+    if a != want {
+        return Err(off(a));
+    }
+    if b != want {
+        return Err(off(b));
+    }
+    Ok(())
+}
+
+fn entity_kind_name(sketches: &[Sketch], ski: usize, ent: usize) -> &'static str {
+    crate::sketch::entity_kind(&sketches[ski].entities[ent].1)
+}
+
 /// Parse model source into parameters + a GeoGraph (no kernel work yet).
 pub fn parse_model(src: &str, file: &str) -> Result<Model, ModelError> {
     let mut graph = GeoGraph::default();
     let mut params: BTreeMap<String, f64> = BTreeMap::new();
     let mut density: Option<f64> = None;
+    let mut sketches: Vec<Sketch> = Vec::new();
+    let mut ent_names: BTreeMap<String, (usize, usize)> = BTreeMap::new();
     let mut node_count = 0usize;
 
     let err = |line: usize, col: usize, msg: String| ModelError {
@@ -177,6 +502,22 @@ pub fn parse_model(src: &str, file: &str) -> Result<Model, ModelError> {
             return Err(err(lineno, 1, format!("bad node name {lhs:?}")));
         };
         let (call, args) = parse_call(rhs).map_err(|(col, m)| err(lineno, eq + 1 + col, m))?;
+
+        // M4 sketch statements live in their own tables, not the GeoGraph.
+        if is_sketch_call(&call) {
+            apply_sketch_call(
+                &call,
+                &name,
+                &args,
+                lineno,
+                file,
+                &params,
+                &graph,
+                &mut sketches,
+                &mut ent_names,
+            )?;
+            continue;
+        }
 
         // Per-call argument signature: numeric expressions vs node names.
         // Evaluating a node-name slot as an expression would surface the
@@ -289,13 +630,18 @@ pub fn parse_model(src: &str, file: &str) -> Result<Model, ModelError> {
         node_count += 1;
     }
 
-    if node_count == 0 {
-        return Err(err(0, 0, "model defines no geometry nodes".to_string()));
+    if node_count == 0 && sketches.is_empty() {
+        return Err(err(
+            0,
+            0,
+            "model defines no geometry or sketches".to_string(),
+        ));
     }
     Ok(Model {
         name: file.to_string(),
         density_g_cm3: density.unwrap_or(1.0),
         graph,
+        sketches,
     })
 }
 
@@ -381,7 +727,7 @@ part  = cut(plate, bore)
         let e = parse_model("a = frobnicate(1)", "x.pcm").unwrap_err();
         assert!(e.msg.contains("unknown geometry call"), "{e}");
         let e = parse_model("# only comments", "x.pcm").unwrap_err();
-        assert!(e.msg.contains("no geometry nodes"), "{e}");
+        assert!(e.msg.contains("no geometry or sketches"), "{e}");
         let e = parse_model("param a = 1 +\nb = box(a,1,1)", "x.pcm").unwrap_err();
         assert!(e.msg.contains("expression ends early"), "{e}");
         let e = parse_model("density = -2\na = box(1,1,1)", "x.pcm").unwrap_err();
@@ -401,5 +747,85 @@ part  = cut(plate, bore)
             "  # leading comment\n\n  a = box(1, 2, 3)   # inline\n  b = move ( a , 1 , 0 , 0 ) \n";
         let m = parse_model(src, "ws.pcm").unwrap();
         assert_eq!(m.graph.nodes.len(), 2);
+    }
+
+    const SKETCH_DEMO: &str = include_str!("../../../examples/sketch-bracket.pcm");
+
+    #[test]
+    fn sketch_file_parses_and_solves_exact() {
+        use crate::sketch::solver::{SolveStatus, solve};
+        let m = parse_model(SKETCH_DEMO, "examples/sketch-bracket.pcm").unwrap();
+        assert_eq!(m.sketches.len(), 1);
+        assert_eq!(m.graph.nodes.len(), 1, "the plate box stays the root");
+        let sk = &m.sketches[0];
+        assert_eq!(sk.name, "br");
+        assert_eq!(sk.entities.len(), 14);
+        assert_eq!(sk.constraints.len(), 13);
+        let (solved, rep) = solve(sk);
+        eprintln!(
+            "sketch-bracket: {rep} | max|res| {:.3e} l2 {:.3e} iters {}",
+            rep.max_residual, rep.l2_residual, rep.iterations
+        );
+        assert_eq!(rep.status, SolveStatus::Solved);
+        assert!(rep.max_residual < 1e-9, "residual {}", rep.max_residual);
+        assert_eq!(rep.dof, 0);
+        assert!(rep.redundant.is_empty());
+        // fillet center must land at (w - fil, fil) = (68, 12)
+        let ci = sk.entity_index("fillet").unwrap();
+        let oc = match solved.entities[ci].1 {
+            crate::sketch::Entity::Circle { center, radius } => (center, radius),
+            _ => panic!(),
+        };
+        let (cx, cy) = match solved.entities[oc.0].1 {
+            crate::sketch::Entity::Point { x, y } => (x, y),
+            _ => panic!(),
+        };
+        eprintln!("fillet center ({cx:.12}, {cy:.12}) r {:.12}", oc.1);
+        assert!((cx - 68.0).abs() < 1e-9 && (cy - 12.0).abs() < 1e-9);
+        assert!((oc.1 - 12.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn sketch_parse_errors_are_located_and_specific() {
+        // constraint before its entity exists
+        let e = parse_model("s = newsketch()\nd = distance(p, q, 5)", "x.pcm").unwrap_err();
+        assert_eq!(e.line, 2);
+        assert!(e.msg.contains("entity \"p\" is not defined"), "{e}");
+        // wrong entity kind for the constraint
+        let e = parse_model(
+            "s = newsketch()\na = point(s,0,0)\nb = point(s,1,0)\nl = line(s,a,b)\nh = horizontal(a)",
+            "x.pcm",
+        )
+        .unwrap_err();
+        assert!(e.msg.contains("must be line"), "{e}");
+        // tangent with an unsupported pair
+        let e = parse_model(
+            "s = newsketch()\na = point(s,0,0)\nb = point(s,1,0)\nt = tangent(a,b)",
+            "x.pcm",
+        )
+        .unwrap_err();
+        assert!(e.msg.contains("tangent(point, point)"), "{e}");
+        // cross-sketch constraint
+        let e = parse_model(
+            "s1 = newsketch()\ns2 = newsketch()\na = point(s1,0,0)\nb = point(s2,1,0)\nd = distance(a,b,1)",
+            "x.pcm",
+        )
+        .unwrap_err();
+        assert!(e.msg.contains("expected \"s1\""), "{e}");
+        // name clash with a geometry node
+        let e = parse_model(
+            "part = box(1,2,3)\ns = newsketch()\npart = point(s,0,0)",
+            "x.pcm",
+        )
+        .unwrap_err();
+        assert!(e.msg.contains("defined twice"), "{e}");
+        // entity attached to something that is not a sketch
+        let e = parse_model("part = box(1,2,3)\np = point(part,0,0)", "x.pcm").unwrap_err();
+        assert!(e.msg.contains("not a sketch"), "{e}");
+        // sketch-only file is legal now
+        let m = parse_model("s = newsketch()\na = point(s, 1, 2)", "only.pcm").unwrap();
+        assert_eq!(m.sketches.len(), 1);
+        assert!(m.graph.nodes.is_empty());
+        assert!(m.graph.root().is_none());
     }
 }

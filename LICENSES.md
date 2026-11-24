@@ -51,6 +51,18 @@ Verdict: no GPL/LGPL/AGPL/MPL-only or non-permissive dependency exists in the
 M2 tree. GPL exposure stays as documented in the survey (slvs at M4 — blocked
 without user approval; OCCT at v2).
 
+## M4 (2026-11-24): solver dependencies — none added
+
+- slvs (SolveSpace core): GPL-3.0 (verified M1) — NOT vendored; own LM
+  solver in crates/physcad/src/sketch/solver.rs.
+- 3BCAD sketch solver (github.com/Three-Bugs-Studio/3bcad): repo Apache-2.0
+  — studied for design (dual-number Jacobians, damping form, eigen rank);
+  zero code linked.
+- nalgebra (3BCAD's LA dep): crates.io API 2026-11-24 — Apache-2.0 since
+  0.22, BSD-3-Clause before; earlier internal note calling it "GPL family"
+  was WRONG, corrected here. Not needed: our dense Cholesky + Jacobi
+  eigen + LM is ~200 LoC, dependency-free.
+
 ## Kernel-level deps (not used yet)
 
 | Crate | Version | License | Planned |
