@@ -22,7 +22,7 @@ pub struct ViewerApp {
 
 impl ViewerApp {
     pub fn new(scene: Vec<SceneItem>) -> Self {
-        let visible = vec![true; scene.len()];
+        let visible = scene.iter().map(|i| i.name != "cylinder").collect();
         Self {
             camera: OrbitCamera {
                 target: glam::Vec3::new(0.0, 1.1, 0.0),
@@ -37,10 +37,13 @@ impl ViewerApp {
 impl eframe::App for ViewerApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         egui::Panel::left("controls").show(ui, |ui| {
-            ui.heading("PhysCAD — viewer shell");
+            ui.heading("PhysCAD — M3 (CSG kernel)");
             ui.separator();
             for (i, item) in self.scene.iter().enumerate() {
                 ui.checkbox(&mut self.visible[i], item.name);
+                if self.visible[i] && !item.info.is_empty() {
+                    ui.label(egui::RichText::new(&item.info).weak().small());
+                }
             }
             ui.separator();
             if ui.button("reset view").clicked() {
@@ -156,13 +159,19 @@ pub fn run() -> eframe::Result {
     let opts = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1180.0, 720.0])
-            .with_title("PhysCAD — viewer shell (M2)"),
+            .with_title("PhysCAD — CSG viewer (M3)"),
         renderer: eframe::Renderer::Wgpu,
         ..Default::default()
     };
     eframe::run_native(
         "physcad-view",
         opts,
-        Box::new(|_cc| Ok(Box::new(ViewerApp::new(crate::scene::sample_scene())))),
+        Box::new(|_cc| {
+            // CSG result first (visible), then the M2 primitives for
+            // comparison; the cylinder hides behind the CSG part.
+            let mut scene = crate::scene::csg_demo_scene().unwrap_or_default();
+            scene.extend(crate::scene::sample_scene());
+            Ok(Box::new(ViewerApp::new(scene)))
+        }),
     )
 }

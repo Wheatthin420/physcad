@@ -24,6 +24,15 @@ Scan method (2026-11-24, reproducible):
 | bytemuck | 1.25.2 | Zlib OR Apache-2.0 OR MIT | Pod casts for GPU buffers |
 | image | 0.25.10 | MIT OR Apache-2.0 | PNG screenshot output (png feature only) |
 | pollster | 1.0.3 | MIT OR Apache-2.0 | block_on for adapter/device setup (no async runtime yet) |
+| manifold3d | 0.4.2 (default-features=false) | Apache-2.0 OR MIT | M3 CSG kernel (facade for manifold-csg 0.4.2 -> manifold-csg-sys 3.5.106). `parallel` feature OFF: single-threaded upstream manifold — deliberate for deterministic rebuilds and to skip the bundled TBB build. |
+
+C++ actually compiled into the binary: manifold-csg-sys fetches
+elalish/manifold **v3.5.5** (detached HEAD "Release v3.5.5 (#1947)" in its
+fetch log) and cmake-builds it with g++. Its LICENSE at
+`target/debug/build/manifold-csg-sys/*/out/manifold-src/LICENSE` verified
+in-tree 2026-11-24: Apache-2.0 header, matching upstream repo. Build also
+needs `cmake` (not on this box: installed standalone 3.31.6 to
+~/.local/opt/cmake, PATH via ~/.bashrc).
 
 Chosen license where dual: Apache-2.0 OR MIT (either).
 
@@ -46,4 +55,4 @@ without user approval; OCCT at v2).
 
 | Crate | Version | License | Planned |
 |---|---|---|---|
-| manifold3d | 0.4.2 | Apache-2.0 OR MIT | M3 CSG kernel (verified via crates.io API 2026-11-24) |
+| OCCT | — | LGPL-2.1 w/ exception | STEP import/export (v2) — decision deferred, see SURVEY.md |

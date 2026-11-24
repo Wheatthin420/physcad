@@ -1,0 +1,17 @@
+# bore-plate.pcm — PhysCAD M3 demo part (units: mm)
+# 60x12x40 steel plate, through-bore, spherical knob sunk on the top face.
+density = 7.85                     # g/cm^3 (readout only)
+
+param plate_w = 60
+param plate_h = plate_w / 5        # 12
+param plate_d = plate_w * 2 / 3    # 40
+param bore_r  = plate_h / 2 - 1    # 5
+param knob_r  = plate_h / 2        # 6
+
+plate   = box(plate_w, plate_h, plate_d)
+bore    = cylinder(bore_r, plate_h + 4, 96)
+knob    = sphere(knob_r, 48, 96)
+knob_h  = move(knob, plate_w / 4, plate_h / 2, 0)
+
+stem = union(plate, knob_h)
+part = cut(stem, bore)
