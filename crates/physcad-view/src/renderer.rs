@@ -53,6 +53,28 @@ pub fn render_scene_png(
     width: u32,
     height: u32,
 ) -> Result<RenderReport, String> {
+    render_scene_png_view(scene, path, width, height, None)
+}
+
+/// Same pipeline with an explicit camera (M5 bore see-through probe needs
+/// a steeper elevation than the default 20-degree orbit).
+pub fn render_scene_png_with_camera(
+    scene: &[SceneItem],
+    path: &Path,
+    width: u32,
+    height: u32,
+    camera: physcad::camera::OrbitCamera,
+) -> Result<RenderReport, String> {
+    render_scene_png_view(scene, path, width, height, Some(camera))
+}
+
+fn render_scene_png_view(
+    scene: &[SceneItem],
+    path: &Path,
+    width: u32,
+    height: u32,
+    camera_override: Option<physcad::camera::OrbitCamera>,
+) -> Result<RenderReport, String> {
     if width == 0 || height == 0 {
         return Err("width/height must be non-zero".into());
     }
@@ -233,10 +255,10 @@ pub fn render_scene_png(
         cache: None,
     });
 
-    let camera = OrbitCamera {
+    let camera = camera_override.unwrap_or(OrbitCamera {
         target: glam::Vec3::new(0.0, 1.1, 0.0),
         ..OrbitCamera::default()
-    };
+    });
     let aspect = width as f32 / height as f32;
     let camera_uniform = CameraUniform {
         view_proj: camera.view_projection(aspect).to_cols_array_2d(),

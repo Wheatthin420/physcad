@@ -70,3 +70,39 @@ fails to converge is a warning, not a build error, until features need it).
 
 Example: examples/sketch-bracket.pcm (rectangle + fillet circle tangent
 to two edges + quarter arc; 17 eqs / 17 params -> dof 0, max|res| 5.7e-14).
+
+## M5: extrude / revolve — sketch regions become solids
+
+Sketch-backed geometry NODES (they enter the CSG graph, compose with
+box/cylinder/… and each other; each closes the solved sketch's curves
+into regions and builds a closed manifold mesh itself, which the kernel
+then consumes like any primitive):
+
+    slab = extrude(SKETCH, H)                 # solid z in [0, H]
+    slab = extrude(SKETCH, H, OFF)            # solid z in [OFF, OFF+H]
+    slab = extrude(SKETCH, H, OFF, SEGS)      # SEGS-gon arc sampling
+    bush = revolve(SKETCH, AXIS_LINE)         # 360 deg about an in-plane line entity
+    bush = revolve(SKETCH, AXIS_LINE, DEG)    # 0 < DEG <= 360
+    bush = revolve(SKETCH, AX, DEG, SWEEP_SEGS[, PROFILE_SEGS])
+
+    # bore plate straight from a solved sketch, then CSG-composed:
+    part = cut(extrude(plate, 12, 0, 96), move(box(18, 14, 4), 18, 11, 10))
+
+Semantics:
+- The sketch is LM-SOLVED first (M4), then curves are welded (1e-9 mm)
+  into closed loops: outer boundaries CCW, holes CW; island-in-hole
+  nesting supported (every even-depth loop owns a region).
+- Caps are triangulated by our own bridge+ear-clipper; walls from loop
+  edges. The generated f64 mesh MUST pass closed_manifold_check (edge
+  pairing + Euler) before the kernel sees it; evaluate() re-checks the
+  display mesh. Multiple regions in one sketch union into one node.
+- SEGS / SWEEP_SEGS: exact control of polygonization (the gates rely on
+  it — the generated mesh is then the exact polyhedron). profile_segs
+  omitted = chord-sagitta 0.02 mm sampling.
+- Limits (honest errors, see MILESTONES "Known limits"): >2 chains at
+  one vertex rejected; self-intersecting regions rejected at
+  triangulation; revolve profile must lie strictly on ONE side of the
+  axis (touching/crossing deferred to the timeline milestone).
+
+Example: examples/sketch-plate.pcm (solved rectangle+bore sketch ->
+extrude -> corner-pocket cut; V exact-polyhedral within 1.8e-11).

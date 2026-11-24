@@ -18,6 +18,8 @@ pub const DEMO_MODEL_SRC: &str = include_str!("../../../examples/bore-plate.pcm"
 pub const DEMO_MODEL_NAME: &str = "examples/bore-plate.pcm";
 pub const SKETCH_MODEL_SRC: &str = include_str!("../../../examples/sketch-bracket.pcm");
 pub const SKETCH_MODEL_NAME: &str = "examples/sketch-bracket.pcm";
+pub const M5_MODEL_SRC: &str = include_str!("../../../examples/sketch-plate.pcm");
+pub const M5_MODEL_NAME: &str = "examples/sketch-plate.pcm";
 
 #[derive(Clone, Debug)]
 pub struct SceneItem {
@@ -246,9 +248,104 @@ pub fn sketch_demo_scene() -> Result<Vec<SceneItem>, String> {
     Ok(items)
 }
 
+/// M5: the bore-plate-from-sketch model (LM solve -> regions -> extrude
+/// -> CSG cut) through the same kernel path the CLI runs.
+pub fn m5_demo_solid() -> Result<csg::Solid, String> {
+    let m = parse_model(M5_MODEL_SRC, M5_MODEL_NAME).map_err(|e| e.to_string())?;
+    csg::evaluate_with(&m.graph, &m.sketches).map_err(|e| e.to_string())
+}
+
+/// M5 revolve demo: 10..14 mm ring bushing, 8 mm long, exact-polyhedral
+/// 96-step sweep (crates/physcad/tests/m5_gates.rs gates the 64-step one).
+pub const REVOLVE_DEMO_SRC: &str = "s = newsketch()\n\
+    a = point(s, 10, 0)\nb = point(s, 14, 0)\nc = point(s, 14, 8)\nd = point(s, 10, 8)\n\
+    ab = line(s, a, b)\nbc = line(s, b, c)\ncd = line(s, c, d)\nda = line(s, d, a)\n\
+    ax0 = point(s, 0, -2)\nax1 = point(s, 0, 10)\naxl = line(s, ax0, ax1)\n\
+    bush = revolve(s, axl, 360, 96)\n";
+
+pub fn m5_revolve_solid() -> Result<csg::Solid, String> {
+    let m = parse_model(REVOLVE_DEMO_SRC, "render-revolve.pcm").map_err(|e| e.to_string())?;
+    csg::evaluate_with(&m.graph, &m.sketches).map_err(|e| e.to_string())
+}
+
+/// Rotate a model-space solid (sketch plane XY, thickness +z) into the
+/// viewer's Y-up world: (x, y, z) -> (x, z, -y). Baked into the mesh
+/// because SceneItem only carries translation+scale.
+fn lay_flat(mesh: &Mesh) -> Mesh {
+    let mapv = |v: [f32; 3]| [v[0], v[2], -v[1]];
+    Mesh {
+        positions: mesh.positions.iter().map(|p| mapv(*p)).collect(),
+        normals: mesh.normals.iter().map(|n| mapv(*n)).collect(),
+        indices: mesh.indices.clone(),
+    }
+}
+
+/// Kernel-built M5 parts: sketch-extruded plate with corner pocket (blue,
+/// extrude+CSG composition) and a revolved bushing lying on its side
+/// (copper). Both laid flat on the ground plane, 0.05 scene scale.
+pub fn m5_scene() -> Result<Vec<SceneItem>, String> {
+    let model = parse_model(M5_MODEL_SRC, M5_MODEL_NAME).map_err(|e| e.to_string())?;
+    let plate = csg::evaluate_with(&model.graph, &model.sketches).map_err(|e| e.to_string())?;
+    let bush = m5_revolve_solid()?;
+    let scale = 0.05f32; // 60 mm -> 3 scene units
+    Ok(vec![
+        SceneItem {
+            name: "sketch-plate (extrude+CSG)",
+            mesh: lay_flat(&plate.mesh),
+            translation: Vec3::ZERO, // z in [0,12] -> world y in [0,0.6], rests on ground
+            scale,
+            color: [0.30, 0.45, 0.80],
+            info: format!(
+                "V {:.1} mm^3 | m {:.1} g | genus {} | {} tris",
+                plate.volume_mm3,
+                plate.mass_g(model.density_g_cm3),
+                plate.genus,
+                plate.num_tri
+            ),
+        },
+        SceneItem {
+            name: "revolved bushing",
+            mesh: lay_flat(&bush.mesh),
+            translation: Vec3::new(2.6, 14.0 * scale, 0.0), // radius 14 -> rests on ground
+            scale,
+            color: [0.80, 0.52, 0.25],
+            info: format!(
+                "V {:.1} mm^3 | genus {} | {} tris",
+                bush.volume_mm3, bush.genus, bush.num_tri
+            ),
+        },
+    ])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn m5_scene_solids_are_closed_with_exact_bushing_volume() {
+        let items = m5_scene().expect("m5 demo model must build");
+        assert_eq!(items.len(), 2);
+        for item in &items {
+            let (v, e, f) = item
+                .mesh
+                .closed_manifold_check()
+                .unwrap_or_else(|why| panic!("{}: {why}", item.name));
+            let chi = v as i64 - e as i64 + f as i64;
+            assert_eq!(chi, 0, "{}: single genus-1 shell", item.name);
+        }
+        // the bushing at render tessellation (96-step full sweep) has an
+        // EXACT polyhedral volume: (A_96(14) - A_96(10)) * 8
+        let b = m5_revolve_solid().unwrap();
+        let exact = (0.5 * 96.0 * 196.0 * (std::f64::consts::TAU / 96.0).sin()
+            - 0.5 * 96.0 * 100.0 * (std::f64::consts::TAU / 96.0).sin())
+            * 8.0;
+        let dev = (b.volume_mm3 - exact).abs();
+        eprintln!(
+            "m5 bushing: V={:.9} exact={:.9} dev {dev:.3e}",
+            b.volume_mm3, exact
+        );
+        assert!(dev < 1e-6, "bushing exact-polyhedral dev {dev:.3e}");
+    }
 
     #[test]
     fn sample_scene_primitives_are_closed_manifolds() {

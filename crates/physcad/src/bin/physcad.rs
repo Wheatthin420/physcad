@@ -45,6 +45,14 @@ fn run(args: Vec<String>) -> Result<(), String> {
             csg::GeoNode::Cylinder { .. } => "cylinder",
             csg::GeoNode::Sphere { .. } => "sphere",
             csg::GeoNode::Torus { .. } => "torus",
+            csg::GeoNode::Extrude { sketch, .. } => {
+                println!("  #{i:<2} {name:<12} extrude(sketch {sketch})");
+                continue;
+            }
+            csg::GeoNode::Revolve { sketch, axis, .. } => {
+                println!("  #{i:<2} {name:<12} revolve(sketch {sketch} about {axis})");
+                continue;
+            }
             csg::GeoNode::Move { .. } => "move",
             csg::GeoNode::Union { .. } => "union",
             csg::GeoNode::Cut { .. } => "cut",
@@ -85,7 +93,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
         return Ok(());
     };
     println!("root:         {}", m.graph.nodes[root].0);
-    let s = csg::evaluate(&m.graph).map_err(|e| e.to_string())?;
+    let s = csg::evaluate_with(&m.graph, &m.sketches).map_err(|e| e.to_string())?;
     println!("volume_mm3:   {:.6}", s.volume_mm3);
     println!(
         "mass_g:       {:.4}   (density {:.3} g/cm^3)",

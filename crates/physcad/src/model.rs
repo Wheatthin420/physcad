@@ -21,6 +21,15 @@
 //!   NAME = coincident(P1, P2) | distance(P1, P2, D) | angle(L1, L2, DEG)
 //!   NAME = horizontal(L) | vertical(L) | radius(C, R) | fix(P, X, Y)
 //!   NAME = tangent(L, C) | tangent(L, ARC) | tangent(C1, C2)
+//!
+//!   # --- M5: sketch regions -> solids (compose with CSG like any node) ---
+//!   NAME = extrude(SKETCH, H)                 # solid z in [0, H]
+//!   NAME = extrude(SKETCH, H, OFF)            # solid z in [OFF, OFF+H]
+//!   NAME = extrude(SKETCH, H, OFF, SEGS)      # arcs/circles sampled as
+//!                                             # SEGS-gons (0/omitted = chord tol)
+//!   NAME = revolve(SKETCH, AXIS_LINE)         # full 360 deg about in-plane line
+//!   NAME = revolve(SKETCH, AXIS_LINE, DEG)    # partial sweep (0 < DEG <= 360)
+//!   NAME = revolve(SKETCH, AX, DEG, SWEEP_SEGS[, PROFILE_SEGS])
 //! ```
 //!
 //! The root of the solid is the LAST node defined. Units: millimetres.
@@ -128,6 +137,10 @@ fn ident(s: &str) -> Option<String> {
 enum ArgKind {
     Num,
     Node,
+    /// M5: a declared sketch name (resolved against the sketch table).
+    Sketch,
+    /// M5: a declared sketch entity name (resolved against ent_names).
+    SketchEntity,
 }
 
 /// True if `call` is one of the M4 sketch statements (handled outside the
@@ -520,14 +533,52 @@ pub fn parse_model(src: &str, file: &str) -> Result<Model, ModelError> {
             continue;
         }
 
-        // Per-call argument signature: numeric expressions vs node names.
-        // Evaluating a node-name slot as an expression would surface the
-        // wrong error ("unknown variable"), so classify before evaluating.
-        let sig: &[ArgKind] = match call.as_str() {
-            "box" | "cylinder" | "sphere" => &[ArgKind::Num, ArgKind::Num, ArgKind::Num],
-            "torus" => &[ArgKind::Num, ArgKind::Num, ArgKind::Num, ArgKind::Num],
-            "move" => &[ArgKind::Node, ArgKind::Num, ArgKind::Num, ArgKind::Num],
-            "union" | "cut" | "intersect" => &[ArgKind::Node, ArgKind::Node],
+        // Per-call argument signature: numeric expressions vs node names
+        // vs (M5) sketch/entity names. Evaluating a node-name slot as an
+        // expression would surface the wrong error ("unknown variable"),
+        // so classify before evaluating. extrude/revolve have optional
+        // trailing args, hence arity-keyed signatures.
+        let sig: Vec<ArgKind> = match call.as_str() {
+            "box" | "cylinder" | "sphere" => vec![ArgKind::Num; 3],
+            "torus" => vec![ArgKind::Num; 4],
+            "move" => vec![ArgKind::Node, ArgKind::Num, ArgKind::Num, ArgKind::Num],
+            "union" | "cut" | "intersect" => vec![ArgKind::Node; 2],
+            "extrude" => match args.len() {
+                2 => vec![ArgKind::Sketch, ArgKind::Num],
+                3 => vec![ArgKind::Sketch, ArgKind::Num, ArgKind::Num],
+                4 => vec![ArgKind::Sketch, ArgKind::Num, ArgKind::Num, ArgKind::Num],
+                n => {
+                    return Err(err(
+                        lineno,
+                        1,
+                        format!("extrude() takes 2..4 arguments, got {n}"),
+                    ));
+                }
+            },
+            "revolve" => match args.len() {
+                2 => vec![ArgKind::Sketch, ArgKind::SketchEntity],
+                3 => vec![ArgKind::Sketch, ArgKind::SketchEntity, ArgKind::Num],
+                4 => vec![
+                    ArgKind::Sketch,
+                    ArgKind::SketchEntity,
+                    ArgKind::Num,
+                    ArgKind::Num,
+                ],
+                5 => vec![
+                    ArgKind::Sketch,
+                    ArgKind::SketchEntity,
+                    ArgKind::Num,
+                    ArgKind::Num,
+                    ArgKind::Num,
+                ],
+                n => {
+                    return Err(err(
+                        lineno,
+                        1,
+                        format!("revolve() takes 2..5 arguments, got {n}"),
+                    ));
+                }
+            },
             other => {
                 return Err(err(
                     lineno,
@@ -551,12 +602,14 @@ pub fn parse_model(src: &str, file: &str) -> Result<Model, ModelError> {
 
         let mut vals: Vec<f64> = Vec::with_capacity(args.len());
         let mut idx: Vec<usize> = Vec::with_capacity(args.len());
+        let mut names: Vec<String> = Vec::with_capacity(args.len());
         for (k, kind) in sig.iter().enumerate() {
             match kind {
                 ArgKind::Num => {
                     let e = expr::parse(&args[k]).map_err(|e| err(lineno, e.col, e.msg))?;
                     vals.push(e.eval(&params).map_err(|e| err(lineno, e.col, e.msg))?);
                     idx.push(usize::MAX);
+                    names.push(String::new());
                 }
                 ArgKind::Node => {
                     let n = ident(&args[k]).ok_or_else(|| {
@@ -575,6 +628,56 @@ pub fn parse_model(src: &str, file: &str) -> Result<Model, ModelError> {
                     })?;
                     idx.push(i);
                     vals.push(0.0);
+                    names.push(n);
+                }
+                ArgKind::Sketch => {
+                    let n = ident(&args[k]).ok_or_else(|| {
+                        err(
+                            lineno,
+                            1,
+                            format!("{}() argument {} must be a sketch name", call, k + 1),
+                        )
+                    })?;
+                    let si = sketches.iter().position(|s| s.name == n).ok_or_else(|| {
+                        err(
+                            lineno,
+                            1,
+                            format!("{}() references undefined sketch {n:?}", call),
+                        )
+                    })?;
+                    idx.push(si);
+                    vals.push(0.0);
+                    names.push(n);
+                }
+                ArgKind::SketchEntity => {
+                    let n = ident(&args[k]).ok_or_else(|| {
+                        err(
+                            lineno,
+                            1,
+                            format!("{}() argument {} must be a sketch entity name", call, k + 1),
+                        )
+                    })?;
+                    let (ski, ei) = ent_names.get(&n).copied().ok_or_else(|| {
+                        err(
+                            lineno,
+                            1,
+                            format!("{}() references undefined sketch entity {n:?}", call),
+                        )
+                    })?;
+                    let kind_name = crate::sketch::entity_kind(&sketches[ski].entities[ei].1);
+                    if kind_name != "line" {
+                        return Err(err(
+                            lineno,
+                            1,
+                            format!(
+                                "{}() axis {n:?} is {kind_name}, must be a line entity",
+                                call
+                            ),
+                        ));
+                    }
+                    idx.push(ei);
+                    vals.push(0.0);
+                    names.push(n);
                 }
             }
         }
@@ -614,6 +717,41 @@ pub fn parse_model(src: &str, file: &str) -> Result<Model, ModelError> {
                 major_segs: int_arg(2, 3, vals[2])?,
                 minor_segs: int_arg(3, 3, vals[3])?,
             },
+            "extrude" => GeoNode::Extrude {
+                sketch: names[0].clone(),
+                height: vals[1],
+                offset: if args.len() >= 3 { vals[2] } else { 0.0 },
+                profile_segs: if args.len() >= 4 {
+                    int_arg(3, 3, vals[3])?
+                } else {
+                    0
+                },
+            },
+            "revolve" => {
+                let deg = if args.len() >= 3 { vals[2] } else { 360.0 };
+                if !(deg > 0.0 && deg <= 360.0) {
+                    return Err(err(
+                        lineno,
+                        1,
+                        format!("revolve() sweep angle must be in (0, 360] degrees (got {deg})"),
+                    ));
+                }
+                GeoNode::Revolve {
+                    sketch: names[0].clone(),
+                    axis: names[1].clone(),
+                    angle: deg.to_radians(),
+                    sweep_segs: if args.len() >= 4 {
+                        int_arg(3, 3, vals[3])?
+                    } else {
+                        96
+                    },
+                    profile_segs: if args.len() >= 5 {
+                        int_arg(4, 3, vals[4])?
+                    } else {
+                        0
+                    },
+                }
+            }
             "move" => GeoNode::Move {
                 node: idx[0],
                 x: vals[1],

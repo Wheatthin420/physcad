@@ -13,6 +13,10 @@ use std::collections::{BTreeMap, HashMap};
 use manifold3d::Manifold;
 
 use crate::primitives::Mesh;
+use crate::sketch::Sketch;
+use crate::sketch::loops::{Sample, regions};
+use crate::sketch::solver::{SolveStatus, solve};
+use crate::sweep::{Axis2, extrude_region, revolve_region};
 use crate::tess::{Mesh64, box64, cylinder64, sphere64, torus64};
 
 /// One node of the geometry graph. Operands are indices into the same
@@ -42,6 +46,25 @@ pub enum GeoNode {
         tube: f64,
         major_segs: usize,
         minor_segs: usize,
+    },
+    /// M5: extrude every closed region of a (solved) sketch along +z
+    /// from `offset` to `offset + height`. `profile_segs` = 0 selects
+    /// chord-tolerance sampling of arcs; N > 0 forces N segments per
+    /// full turn (exact-polyhedral gates). Regions union into one node.
+    Extrude {
+        sketch: String,
+        height: f64,
+        offset: f64,
+        profile_segs: usize,
+    },
+    /// M5: revolve every closed region of a (solved) sketch about an
+    /// in-plane line ENTITY (`axis`), `angle` radians in (0, 2pi].
+    Revolve {
+        sketch: String,
+        axis: String,
+        angle: f64,
+        sweep_segs: usize,
+        profile_segs: usize,
     },
     Move {
         node: usize,
@@ -225,9 +248,82 @@ fn dim_ok(name: &str, pairs: &[(&str, f64)]) -> Result<(), KernelError> {
     Ok(())
 }
 
+/// Solve a sketch and extract closed regions. `profile_segs` 0 = chord
+/// tolerance sampling (renderer behaviour); N = N segments per full turn
+/// (what the exact-polyhedral volume gates rely on).
+fn sketch_regions(
+    sk: &Sketch,
+    profile_segs: usize,
+    skip_entities: &[usize],
+) -> Result<Vec<crate::sketch::loops::Region2>, KernelError> {
+    let (solved, rep) = solve(sk);
+    if rep.status != SolveStatus::Solved {
+        return Err(KernelError(format!(
+            "sketch {}: solver did not converge (max|res| {:.3e}): {}",
+            sk.name, rep.max_residual, rep.message
+        )));
+    }
+    let sample = if profile_segs > 0 {
+        Sample::Segs(profile_segs)
+    } else {
+        Sample::Chord(0.02)
+    };
+    regions(&solved, sample, 1e-9, skip_entities)
+        .map_err(|e| KernelError(format!("sketch {}: {e}", sk.name)))
+}
+
+fn find_sketch<'a>(
+    sketches: &'a [Sketch],
+    name: &str,
+    node: &str,
+) -> Result<&'a Sketch, KernelError> {
+    sketches.iter().find(|s| s.name == name).ok_or_else(|| {
+        KernelError(format!(
+            "node {node}: sketch {name:?} not defined in this model"
+        ))
+    })
+}
+
+/// Coordinates of a point entity (kind was checked at add time).
+fn point_xy(sk: &Sketch, i: usize) -> Result<[f64; 2], KernelError> {
+    match sk.entities.get(i).map(|(_, e)| e) {
+        Some(crate::sketch::Entity::Point { x, y }) => Ok([*x, *y]),
+        _ => Err(KernelError(format!(
+            "sketch {}: entity #{i} is not a point",
+            sk.name
+        ))),
+    }
+}
+
+/// Sweep a region set through our own mesh builders, insist our
+/// closed-manifold check passes BEFORE the kernel sees it, and union the
+/// per-region solids into one manifold (sketch may hold several regions).
+fn swept_manifold(
+    name: &str,
+    regs: &[crate::sketch::loops::Region2],
+    build: impl Fn(&crate::sketch::loops::Region2) -> Result<Mesh64, crate::sweep::SweepError>,
+) -> Result<Manifold, KernelError> {
+    let mut acc: Option<Manifold> = None;
+    for (ri, r) in regs.iter().enumerate() {
+        let m = build(r).map_err(|e| KernelError(format!("{name}: region #{ri}: {e}")))?;
+        if let Err(e) = m.closed_manifold_check() {
+            return Err(KernelError(format!(
+                "{name}: generated sweep mesh failed closed-manifold check: {e}"
+            )));
+        }
+        let man = mesh_to_manifold(&m)?;
+        acc = Some(match acc {
+            None => man,
+            Some(prev) => prev.union(&man),
+        });
+    }
+    acc.ok_or_else(|| KernelError(format!("{name}: sketch produced no regions")))
+}
+
 /// Evaluate the whole graph; each node is built exactly once and shared
-/// nodes reuse their kernel manifold (DAG semantics).
-pub fn evaluate(graph: &GeoGraph) -> Result<Solid, KernelError> {
+/// nodes reuse their kernel manifold (DAG semantics). Sketch-backed
+/// nodes resolve their sketch by name from `sketches`.
+pub fn evaluate_with(graph: &GeoGraph, sketches: &[Sketch]) -> Result<Solid, KernelError> {
     let root = graph
         .root()
         .ok_or_else(|| KernelError("empty geometry graph".into()))?;
@@ -270,6 +366,57 @@ pub fn evaluate(graph: &GeoGraph) -> Result<Solid, KernelError> {
                     )));
                 }
                 mesh_to_manifold(&torus64(*r, *tube, *major_segs, *minor_segs))?
+            }
+            GeoNode::Extrude {
+                sketch,
+                height,
+                offset,
+                profile_segs,
+            } => {
+                dim_ok(name, &[("extrude height", *height)])?;
+                if !offset.is_finite() {
+                    return Err(KernelError(format!("{name}: offset must be finite")));
+                }
+                let sk = find_sketch(sketches, sketch, name)?;
+                let regs = sketch_regions(sk, *profile_segs, &[])?;
+                let (z0, z1) = (*offset, *offset + *height);
+                swept_manifold(name, &regs, |r| extrude_region(r, z0, z1))?
+            }
+            GeoNode::Revolve {
+                sketch,
+                axis,
+                angle,
+                sweep_segs,
+                profile_segs,
+            } => {
+                if *sweep_segs < 3 {
+                    return Err(KernelError(format!(
+                        "{name}: revolve sweep segments must be >= 3"
+                    )));
+                }
+                let sk = find_sketch(sketches, sketch, name)?;
+                let (solved, _) = solve(sk);
+                let ai = solved.entity_index(axis).ok_or_else(|| {
+                    KernelError(format!(
+                        "{name}: axis entity {axis:?} not in sketch {sketch}"
+                    ))
+                })?;
+                let (pa, pb) = match solved.entities[ai].1 {
+                    crate::sketch::Entity::Line { a, b } => {
+                        (point_xy(&solved, a)?, point_xy(&solved, b)?)
+                    }
+                    _ => {
+                        return Err(KernelError(format!(
+                            "{name}: revolve axis {axis:?} must be a line entity"
+                        )));
+                    }
+                };
+                let axis2 =
+                    Axis2::through(pa, pb).map_err(|e| KernelError(format!("{name}: {e}")))?;
+                let regs = sketch_regions(sk, *profile_segs, &[ai])?;
+                swept_manifold(name, &regs, |r| {
+                    revolve_region(r, axis2, *angle, *sweep_segs)
+                })?
             }
             GeoNode::Move { node, x, y, z } => cache[*node]
                 .as_ref()
@@ -322,6 +469,11 @@ pub fn evaluate(graph: &GeoGraph) -> Result<Solid, KernelError> {
         genus,
         num_tri,
     })
+}
+
+/// Compatibility wrapper for pure-geometry graphs (no sketch nodes).
+pub fn evaluate(graph: &GeoGraph) -> Result<Solid, KernelError> {
+    evaluate_with(graph, &[])
 }
 
 #[cfg(test)]

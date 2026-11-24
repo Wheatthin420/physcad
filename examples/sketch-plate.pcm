@@ -1,0 +1,38 @@
+# M5 demo — bore plate built straight from a SOLVED SKETCH, then
+# CSG-composed (extrude -> cut corner pocket). Units mm.
+# The rectangle starts deliberately sloppy; the M4 LM solver snaps it
+# exact, loops.rs closes it, sweep.rs triangulates and extrudes.
+density = 7.85
+param w = 60
+param d = 40
+param t = 12
+param bore_r = 5
+param pk_w = 18
+param pk_d = 14
+param pk_h = 4
+
+plate = newsketch()
+pa = point(plate, -29.3, -19.6)
+pb = point(plate, 30.4, -20.2)
+pc = point(plate, 29.8, 20.4)
+pd = point(plate, -30.2, 19.7)
+ab = line(plate, pa, pb)
+bc = line(plate, pb, pc)
+cd = line(plate, pc, pd)
+da = line(plate, pd, pa)
+anchor = fix(pa, -w / 2, -d / 2)
+ab_h = horizontal(ab)
+bc_v = vertical(bc)
+cd_h = horizontal(cd)
+da_v = vertical(da)
+wd = distance(pa, pb, w)
+dp = distance(pb, pc, d)
+bcen = point(plate, 1.3, -0.7)
+bore = circle(plate, bcen, 3.3)
+bcen_f = fix(bcen, 0, 0)
+bore_dim = radius(bore, bore_r)
+
+slab = extrude(plate, t)                       # z in [0, 12]
+pocket = box(pk_w, pk_d, pk_h)                 # corner pocket
+pocket_at = move(pocket, w / 2 - 12, d / 2 - 9, 10)   # cuts z in [8, 12]
+part = cut(slab, pocket_at)

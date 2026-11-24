@@ -14,6 +14,7 @@
 //! Coordinates are millimetres in the sketch plane; constraint angles are
 //! radians in the API (the .pcm file writes degrees).
 
+pub mod loops;
 pub mod solver;
 
 use std::fmt;

@@ -47,6 +47,58 @@ impl Mesh64 {
         }
         sum
     }
+
+    /// Closed-manifold invariant on the f64 mesh (mirrors
+    /// `Mesh::closed_manifold_check`): position-dedup, every directed
+    /// edge used exactly once with its reverse present, no degenerate
+    /// triangles. Returns (V, E, F) so callers can assert the Euler
+    /// characteristic. Generated sweep meshes must pass this *before*
+    /// the kernel ever sees them.
+    pub fn closed_manifold_check(&self) -> Result<(usize, usize, usize), String> {
+        if !self.indices.len().is_multiple_of(3) {
+            return Err(format!(
+                "index count {} not a multiple of 3",
+                self.indices.len()
+            ));
+        }
+        let mut dedup: std::collections::HashMap<[u64; 3], u32> = std::collections::HashMap::new();
+        let mut remap = vec![u32::MAX; self.positions.len()];
+        for (i, p) in self.positions.iter().enumerate() {
+            let key = [p[0].to_bits(), p[1].to_bits(), p[2].to_bits()];
+            let next = dedup.len() as u32;
+            let id = *dedup.entry(key).or_insert(next);
+            remap[i] = id;
+        }
+        let v = dedup.len();
+        let mut edges: std::collections::HashMap<(u32, u32), u32> =
+            std::collections::HashMap::new();
+        for tri in self.indices.chunks(3) {
+            let t = [
+                remap[tri[0] as usize],
+                remap[tri[1] as usize],
+                remap[tri[2] as usize],
+            ];
+            if t[0] == t[1] || t[1] == t[2] || t[2] == t[0] {
+                return Err(format!("degenerate triangle: {t:?}"));
+            }
+            for [a, b] in [[t[0], t[1]], [t[1], t[2]], [t[2], t[0]]] {
+                *edges.entry((a, b)).or_insert(0) += 1;
+            }
+        }
+        let f = self.indices.len() / 3;
+        let e = edges.len() / 2;
+        for (&(a, b), &count) in &edges {
+            if count != 1 {
+                return Err(format!("directed edge ({a},{b}) used {count} times"));
+            }
+            if !edges.contains_key(&(b, a)) {
+                return Err(format!(
+                    "edge ({a},{b}) has no opposite ({b},{a}) — open or bad winding"
+                ));
+            }
+        }
+        Ok((v, e, f))
+    }
 }
 
 /// Axis-aligned box centered on the origin (x=w, y=h, z=d).

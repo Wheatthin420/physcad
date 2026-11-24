@@ -6,7 +6,7 @@
 | 2 | Viewer shell (wgpu + egui, orbit, primitives, screenshot) | DONE | 2026-11-24 | crates/physcad + crates/physcad-view; docs/m2-capture.png (1280x720, llvmpipe Cpu/Vulkan adapter, sha256 in commit msg body); LICENSES.md opened |
 | 3 | Mesh kernel slice (manifold3d CSG → STL, params+expressions) | DONE | 2026-11-24 | crates/physcad {expr,tess,csg,model,stl}.rs + src/bin/physcad.rs; crates/physcad/tests/m3_gates.rs (7 analytic volume gates + mass gate + bit-stability, incl. torus); crates/physcad-view/tests/csg_capture.rs (headless render of CSG result incl. kernel torus + exact-polyhedral volume check); examples/bore-plate.pcm + examples/torus-plate.pcm; docs/m3-csg.png; evidence below |
 | 4 | Sketches + constraint solver (own LM; slvs blocked GPL-3.0) | DONE | 2026-11-24 | crates/physcad/src/sketch/{mod,solver}.rs (dual-number exact Jacobians, dense LM, Jacobi-eigen rank/DOF, Gram-Schmidt named redundancy) + .pcm sketch grammar in model.rs + examples/sketch-bracket.pcm + crates/physcad/tests/sketch_gates.rs (10 gates, residuals below) + crates/physcad-view/tests/m4_sketch_capture.rs (headless wgpu render of solved sketch; docs/m4-sketch.png). Developed on branch `m4-sketch` (concurrent M3-torus session held the tree), fast-forward merged to main 2026-11-24 |
-| 5 | Extrude/revolve from closed sketch loops | not started | — | — |
+| 5 | Extrude/revolve from closed sketch loops | DONE | 2026-11-24 | crates/physcad/src/sketch/loops.rs (weld+walk+nesting) + src/sweep.rs (own bridge+ear-clip cap triangulator, extrude/revolve mesh builders) + Mesh64::closed_manifold_check + GeoNode::Extrude/Revolve + .pcm grammar + examples/sketch-plate.pcm (solved sketch -> extrude -> CSG cut) + crates/physcad/tests/m5_gates.rs (11 gates; exact-polyhedral devs 0.0..1.8e-11, torus-poly rel 5.7e-3 < 6e-3 bound w/ 4x convergence) + crates/physcad-view/tests/m5_capture.rs (headless render, bore see-through probe, STL round trip; docs/m5-extrude-csg.png). Developed on branch `m5-sweep` (worktree ~/physcad-m5; concurrent repair session held main), merged to main. B-rep migration stays a documented decision point. Evidence below |
 | 6 | Timeline data model + stable topology naming | not started | — | — |
 | 7 | CAM draft (adaptive pocket → GRBL-dialect G-code + sim) | not started | — | — |
 
@@ -216,3 +216,77 @@ exclude a concurrent session's uncommitted WIP sitting in the main checkout):
 `cargo fmt --check` clean; `cargo clippy -j 3 --all-targets` 0 warning lines;
 `cargo test -j 3` exit 0 — 46 lib + 8 m3_gates + 10 sketch_gates + 3 view lib
 + 2 csg_capture + 1 m4 capture + 1 offscreen = 71 passed, 0 failed.
+
+## M5 evidence (all commands run on this box, 2026-11-24, branch m5-sweep)
+
+Gates: `cargo fmt` clean; `cargo clippy -j 3 --all-targets` -> 0 warnings;
+`cargo test -j 3` -> see run log below (counts at merge).
+
+Exact-polyhedral volume gates (`cargo test -j 3 -p physcad --test m5_gates -- --nocapture`);
+the generated mesh IS the polyhedron, so bounds are 1e-9 absolute, not
+tessellation slop:
+
+```
+GATE rect-extrude:          got 240.000000000   exact 240.000000000   dev 0.000e0
+GATE circ64-extrude:        got 768.454380184   exact 768.454380184   dev 0.000e0
+GATE bore-plate(sketch):    got 2415.162449238  exact 2415.162449238  dev 4.547e-13  (rect - 96-gon bore, chi 0, genus 1)
+GATE revolve360 shell:      got 2408.869240739  exact 2408.869240739  dev 4.547e-13  ((A64(14)-A64(10))*8, chi 0)
+GATE revolve90 shell:       got 603.170649820   exact 603.170649820   dev 8.072e-12  (chi 2; analytic sector 603.185789489;
+                                      convergence vs continuous: e(32) 2.422e-1 -> e(128) 1.514e-2, ~16x for 4x steps)
+GATE extrude+cut:           got 2367.162449238  exact 2367.162449238  dev 4.547e-13  (pocket -48 exact, genus 1)
+GATE two-region extrude:    got 100.000000000   exact 100.000000000   dev 1.421e-14  (genus -1 two shells, chi 4)
+GATE offset extrude:        z span [3.000, 9.000] pinned, V 240 exact
+GATE torus-poly(48,48):     got 628.055170      analytic 631.654682   rel 5.699e-3  (< stated 6e-3 bound; chi 0, genus 1)
+GATE torus-poly(96,96):     rel 1.427e-3                                              (4.0x drop: quadratic)
+GATE sketch-plate.pcm:      V=26854.299840599   exact 26854.299840599 dev 1.819e-11 (bore sampled chord-tol -> 36-gon)
+   solve from file: plate (10 entities, 9 constraints): 11 eqs, 11 params, rank 11, dof 0, max|res| 1.776e-14, 5 iters
+   STL export: 8884 bytes; f64-sum reread rel vol drift 3.084e-10; cross-process sha256 e50c381b71de0685... twice
+```
+
+Closed-manifold discipline: every sweep mesh passes
+`tess::Mesh64::closed_manifold_check` (edge pairing + Euler) inside
+`evaluate_with` BEFORE kernel submission (KernelError names the node and
+the sub-check), and `evaluate` re-checks the display mesh after kernel
+round trip (M3's hardened forensics message path). Euler chars asserted
+per gate: box=2, annulus extrude=0, full revolve=0, partial=2, two
+shells=4.
+
+Cap triangulator design (sweep.rs): bridge each hole into the outer
+polygon with the shortest fully-clear cut traversed OUT AND BACK between
+the same vertex pair (bridge terms cancel in the shoelace sum), then
+ear-clip with bridge-corner ids never clipped unless nothing else is
+available. Invariants checked in-module: area(merged) == area(outer) -
+sum|area(holes)| and sum(triangle areas) == region area (1e-9*scale) — a
+wrong-side bridge fails loudly instead of shipping slivers.
+
+Orientation contract that made winding one rule: region loops are
+"material on the left" (outers CCW, holes CW). For extrude the wall
+normal = right-of-travel; for revolve the (u,v) axis basis is left-
+handed (n x d = -1), so dP/dt x dP/dalpha is INWARD and the outward
+wall triangulation is (a,c,b),(a,e,c) — pinned by signed-volume gates,
+not eyeballed. Partial revolve of a profile on the -u side of the axis
+folds to +u with the sweep origin rotated by pi (the wedge stays in
+place; full sweeps are set-identical either way).
+
+Render gate (`cargo test -j 3 -p physcad-view --test m5_capture`):
+llvmpipe Cpu/Vulkan, 640x360, camera pitch 1.1 rad (steep — a 20-deg
+elevation hides the through-bore inside the top-face band; see limit
+note), measured px: plate blue 18933, bushing copper 5078, bore window
+(background inside = see-through) 145 px anchored on the PROJECTED bore
+center via the same view matrix; bushing tube-open probe 73 px.
+docs/m5-extrude-csg.png sha256
+8a3e01dfbd70083dcf6de610fe593ed0fd3b489a574488acd41f02d991950c5d
+(640x360 RGBA, regenerated by the test; STL export path exercised by the
+second m5_capture test on the same model).
+
+Known limits after M5:
+- Revolve profile must lie STRICTLY on one side of the axis; profiles
+  touching/crossing the axis (lathe solids) need degenerate-ring
+  handling — deferred to the M6 timeline work, honest error until then.
+- Vertices where >2 chains meet are rejected (no planar-face extraction
+  yet); self-intersecting regions refused at triangulation.
+- Extrude is straight +z only (no draft/partial twist); no rounded
+  fillets between sketch and walls.
+- Cap ear-clip is O(n^2)-ish; chord-tol 0.02 mm default keeps demo
+  parts ~100-200 boundary points — fine; revisit for 10k-vertex blobs.
+- No rotations in the CSG layer yet (move only) — carried from M3.
