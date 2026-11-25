@@ -38,19 +38,21 @@ fn run(args: Vec<String>) -> Result<(), String> {
     let m = model::parse_model(&src, &file).map_err(|e| e.to_string())?;
 
     println!("model:        {file}");
-    println!("nodes:        {}", m.graph.nodes.len());
-    for (i, (name, node)) in m.graph.nodes.iter().enumerate() {
-        let kind = match node {
+    println!("features:     {}", m.graph.features.len());
+    for (i, feat) in m.graph.features.iter().enumerate() {
+        let name = feat.name.clone();
+        let id = feat.id;
+        let kind = match &feat.op {
             csg::GeoNode::Box { .. } => "box",
             csg::GeoNode::Cylinder { .. } => "cylinder",
             csg::GeoNode::Sphere { .. } => "sphere",
             csg::GeoNode::Torus { .. } => "torus",
             csg::GeoNode::Extrude { sketch, .. } => {
-                println!("  #{i:<2} {name:<12} extrude(sketch {sketch})");
+                println!("  #{i:<2} {id} {name:<12} extrude(sketch {sketch})");
                 continue;
             }
             csg::GeoNode::Revolve { sketch, axis, .. } => {
-                println!("  #{i:<2} {name:<12} revolve(sketch {sketch} about {axis})");
+                println!("  #{i:<2} {id} {name:<12} revolve(sketch {sketch} about {axis})");
                 continue;
             }
             csg::GeoNode::Move { .. } => "move",
@@ -58,7 +60,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
             csg::GeoNode::Cut { .. } => "cut",
             csg::GeoNode::Intersect { .. } => "intersect",
         };
-        println!("  #{i:<2} {name:<12} {kind}");
+        println!("  #{i:<2} {id} {name:<12} {kind}");
     }
 
     // M4: solve every sketch in the file; diagnostics, never a panic.
@@ -88,11 +90,17 @@ fn run(args: Vec<String>) -> Result<(), String> {
         }
     }
 
-    let Some(root) = m.graph.root() else {
+    let Some(root_id) = m.graph.root() else {
         // sketch-only file: the readout above is the whole story
         return Ok(());
     };
-    println!("root:         {}", m.graph.nodes[root].0);
+    println!(
+        "root:         {}",
+        m.graph
+            .feature(root_id)
+            .map(|f| f.name.clone())
+            .unwrap_or_default()
+    );
     let s = csg::evaluate_with(&m.graph, &m.sketches).map_err(|e| e.to_string())?;
     println!("volume_mm3:   {:.6}", s.volume_mm3);
     println!(
@@ -102,6 +110,22 @@ fn run(args: Vec<String>) -> Result<(), String> {
     );
     println!("genus:        {}", s.genus);
     println!("triangles:    {}", s.num_tri);
+
+    // M6: named faces — identity survives rebuilds (docs/NAMING.md).
+    println!("named_faces:  {}", s.faces.len());
+    for f in &s.faces {
+        println!(
+            "  {:<28} tris={:<7} area={:>11.4} mm^2  centroid=({:>9.3}, {:>9.3}, {:>9.3})",
+            f.key, f.num_tris, f.area_mm2, f.centroid[0], f.centroid[1], f.centroid[2]
+        );
+    }
+    let unmatched = s.faces.iter().filter(|f| !f.feature.is_real()).count();
+    if unmatched > 0 {
+        eprintln!(
+            "warning: {unmatched} unmatched triangle group(s): the naming heuristic \
+             could not bind every face — see docs/NAMING.md failure modes"
+        );
+    }
 
     if let Some(path) = stl_out {
         let bytes = stl::to_stl_binary(&s.mesh);

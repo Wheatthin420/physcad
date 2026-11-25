@@ -35,14 +35,21 @@
 //! The root of the solid is the LAST node defined. Units: millimetres.
 //! Node operands are plain names and must already be defined (files read
 //! top-to-bottom — declaration order is the dependency order, typed as a
-//! GeoGraph DAG instead of parsed at draw time).
+//! `Timeline` of features instead of parsed at draw time).
+//!
+//! M6: a geometry statement may PIN its feature id — `NAME@K = call(...)`
+//! — making that feature's identity stable across renames of *other*
+//! features and across insertion of new features mid-file. Unpinned
+//! features take the next monotonic id at parse time (safe for appends;
+//! insertion BEFORE an unpinned feature renumbers it — the documented
+//! failure mode FM-6, why the editor must always pin).
 
 use std::collections::BTreeMap;
 use std::fmt;
 
-use crate::csg::{GeoGraph, GeoNode};
 use crate::expr;
 use crate::sketch::{Constraint, Entity, Sketch};
+use crate::timeline::{FeatureId, GeoNode, Timeline};
 
 #[derive(Clone, Debug)]
 pub struct ModelError {
@@ -64,7 +71,7 @@ impl std::error::Error for ModelError {}
 pub struct Model {
     pub name: String,
     pub density_g_cm3: f64,
-    pub graph: GeoGraph,
+    pub graph: Timeline,
     /// M4: sketches declared in the same file (solved on demand).
     pub sketches: Vec<Sketch>,
 }
@@ -188,7 +195,7 @@ fn apply_sketch_call(
     lineno: usize,
     file: &str,
     params: &BTreeMap<String, f64>,
-    graph: &GeoGraph,
+    graph: &Timeline,
     sketches: &mut Vec<Sketch>,
     ent_names: &mut BTreeMap<String, (usize, usize)>,
 ) -> Result<(), ModelError> {
@@ -452,7 +459,7 @@ fn entity_kind_name(sketches: &[Sketch], ski: usize, ent: usize) -> &'static str
 
 /// Parse model source into parameters + a GeoGraph (no kernel work yet).
 pub fn parse_model(src: &str, file: &str) -> Result<Model, ModelError> {
-    let mut graph = GeoGraph::default();
+    let mut graph = Timeline::default();
     let mut params: BTreeMap<String, f64> = BTreeMap::new();
     let mut density: Option<f64> = None;
     let mut sketches: Vec<Sketch> = Vec::new();
@@ -512,13 +519,34 @@ pub fn parse_model(src: &str, file: &str) -> Result<Model, ModelError> {
             continue;
         }
 
-        let Some(name) = ident(lhs) else {
+        // M6: optional feature-id pin `NAME@K` on geometry statements.
+        let (nm, pin) = match lhs.split_once('@') {
+            Some((n, k)) => {
+                let Ok(k) = k.trim().parse::<u32>() else {
+                    return Err(err(
+                        lineno,
+                        1,
+                        format!("feature id {k:?} must be an integer (NAME@K, K >= 1)"),
+                    ));
+                };
+                (n, Some(FeatureId(k)))
+            }
+            None => (lhs, None),
+        };
+        let Some(name) = ident(nm) else {
             return Err(err(lineno, 1, format!("bad node name {lhs:?}")));
         };
         let (call, args) = parse_call(rhs).map_err(|(col, m)| err(lineno, eq + 1 + col, m))?;
 
-        // M4 sketch statements live in their own tables, not the GeoGraph.
+        // M4 sketch statements live in their own tables, not the timeline.
         if is_sketch_call(&call) {
+            if pin.is_some() {
+                return Err(err(
+                    lineno,
+                    1,
+                    "feature id pin (@K) is only allowed on geometry nodes".to_string(),
+                ));
+            }
             apply_sketch_call(
                 &call,
                 &name,
@@ -603,6 +631,9 @@ pub fn parse_model(src: &str, file: &str) -> Result<Model, ModelError> {
         let mut vals: Vec<f64> = Vec::with_capacity(args.len());
         let mut idx: Vec<usize> = Vec::with_capacity(args.len());
         let mut names: Vec<String> = Vec::with_capacity(args.len());
+        // M6: node-name slots carry stable FeatureIds (sketch/entity
+        // slots keep FeatureId(0) and are never read for operands).
+        let mut ops: Vec<FeatureId> = Vec::with_capacity(args.len());
         for (k, kind) in sig.iter().enumerate() {
             match kind {
                 ArgKind::Num => {
@@ -610,6 +641,7 @@ pub fn parse_model(src: &str, file: &str) -> Result<Model, ModelError> {
                     vals.push(e.eval(&params).map_err(|e| err(lineno, e.col, e.msg))?);
                     idx.push(usize::MAX);
                     names.push(String::new());
+                    ops.push(FeatureId(0));
                 }
                 ArgKind::Node => {
                     let n = ident(&args[k]).ok_or_else(|| {
@@ -619,18 +651,20 @@ pub fn parse_model(src: &str, file: &str) -> Result<Model, ModelError> {
                             format!("{}() argument {} must be a node name", call, k + 1),
                         )
                     })?;
-                    let i = graph.find(&n).ok_or_else(|| {
+                    let fid = graph.find(&n).ok_or_else(|| {
                         err(
                             lineno,
                             1,
                             format!("{}() references undefined node {n:?}", call),
                         )
                     })?;
-                    idx.push(i);
+                    ops.push(fid);
+                    idx.push(usize::MAX);
                     vals.push(0.0);
                     names.push(n);
                 }
                 ArgKind::Sketch => {
+                    ops.push(FeatureId(0));
                     let n = ident(&args[k]).ok_or_else(|| {
                         err(
                             lineno,
@@ -650,6 +684,7 @@ pub fn parse_model(src: &str, file: &str) -> Result<Model, ModelError> {
                     names.push(n);
                 }
                 ArgKind::SketchEntity => {
+                    ops.push(FeatureId(0));
                     let n = ident(&args[k]).ok_or_else(|| {
                         err(
                             lineno,
@@ -753,26 +788,35 @@ pub fn parse_model(src: &str, file: &str) -> Result<Model, ModelError> {
                 }
             }
             "move" => GeoNode::Move {
-                node: idx[0],
+                node: ops[0],
                 x: vals[1],
                 y: vals[2],
                 z: vals[3],
             },
             "union" => GeoNode::Union {
-                a: idx[0],
-                b: idx[1],
+                a: ops[0],
+                b: ops[1],
             },
             "cut" => GeoNode::Cut {
-                a: idx[0],
-                b: idx[1],
+                a: ops[0],
+                b: ops[1],
             },
             "intersect" => GeoNode::Intersect {
-                a: idx[0],
-                b: idx[1],
+                a: ops[0],
+                b: ops[1],
             },
             _ => unreachable!("signature matched above"),
         };
-        graph.push(&name, node).map_err(|m| err(lineno, 1, m))?;
+        match pin {
+            Some(id) => {
+                graph
+                    .push_with_id(&name, id, node)
+                    .map_err(|m| err(lineno, 1, m))?;
+            }
+            None => {
+                graph.push(&name, node).map_err(|m| err(lineno, 1, m))?;
+            }
+        }
         node_count += 1;
     }
 
@@ -812,14 +856,14 @@ part  = cut(plate, bore)
     fn demo_file_parses_to_expected_graph() {
         let m = parse_model(DEMO, "demo.pcm").expect("demo must parse");
         assert_eq!(m.density_g_cm3, 7.85);
-        assert_eq!(m.graph.nodes.len(), 3);
-        assert_eq!(m.graph.root(), Some(2));
-        assert_eq!(m.graph.find("bore"), Some(1));
-        let GeoNode::Cut { a, b } = m.graph.nodes[2].1 else {
+        assert_eq!(m.graph.features.len(), 3);
+        assert_eq!(m.graph.root(), Some(FeatureId(3)));
+        assert_eq!(m.graph.find("bore"), Some(FeatureId(2)));
+        let GeoNode::Cut { a, b } = m.graph.features[2].op else {
             panic!("last node must be the cut");
         };
-        assert_eq!((a, b), (0, 1));
-        let GeoNode::Cylinder { r, h, segs } = m.graph.nodes[1].1 else {
+        assert_eq!((a, b), (FeatureId(1), FeatureId(2)));
+        let GeoNode::Cylinder { r, h, segs } = m.graph.features[1].op else {
             panic!("bore must be a cylinder");
         };
         assert_eq!(
@@ -841,7 +885,7 @@ part  = cut(plate, bore)
             tube,
             major_segs,
             minor_segs,
-        } = m.graph.nodes[0].1
+        } = m.graph.features[0].op
         else {
             panic!("ring must be a torus");
         };
@@ -911,7 +955,7 @@ part  = cut(plate, bore)
         let src =
             "  # leading comment\n\n  a = box(1, 2, 3)   # inline\n  b = move ( a , 1 , 0 , 0 ) \n";
         let m = parse_model(src, "ws.pcm").unwrap();
-        assert_eq!(m.graph.nodes.len(), 2);
+        assert_eq!(m.graph.features.len(), 2);
     }
 
     const SKETCH_DEMO: &str = include_str!("../../../examples/sketch-bracket.pcm");
@@ -921,7 +965,7 @@ part  = cut(plate, bore)
         use crate::sketch::solver::{SolveStatus, solve};
         let m = parse_model(SKETCH_DEMO, "examples/sketch-bracket.pcm").unwrap();
         assert_eq!(m.sketches.len(), 1);
-        assert_eq!(m.graph.nodes.len(), 1, "the plate box stays the root");
+        assert_eq!(m.graph.features.len(), 1, "the plate box stays the root");
         let sk = &m.sketches[0];
         assert_eq!(sk.name, "br");
         assert_eq!(sk.entities.len(), 14);
@@ -990,7 +1034,36 @@ part  = cut(plate, bore)
         // sketch-only file is legal now
         let m = parse_model("s = newsketch()\na = point(s, 1, 2)", "only.pcm").unwrap();
         assert_eq!(m.sketches.len(), 1);
-        assert!(m.graph.nodes.is_empty());
+        assert!(m.graph.features.is_empty());
         assert!(m.graph.root().is_none());
+    }
+
+    /// M6: `NAME@K` pins a stable feature id; unpinned features take the
+    /// next monotonic id. Bad pins must be located errors, never panic.
+    #[test]
+    fn feature_id_pins_parse_and_validate() {
+        let m = parse_model(
+            "plate@5 = box(1,1,1)\nbore@9 = cylinder(0.5,2,8)\nlate = box(1,1,1)",
+            "pin.pcm",
+        )
+        .unwrap();
+        assert_eq!(m.graph.find("plate"), Some(FeatureId(5)));
+        assert_eq!(m.graph.find("bore"), Some(FeatureId(9)));
+        assert_eq!(m.graph.find("late"), Some(FeatureId(10))); // next after max pin
+        assert!(matches!(m.graph.features[2].op, GeoNode::Box { .. }));
+        let e = parse_model("a@1 = box(1,1,1)\nb@1 = box(1,1,1)", "p.pcm").unwrap_err();
+        assert!(e.msg.contains("already used"), "{e}");
+        let e = parse_model("a@0 = box(1,1,1)", "p.pcm").unwrap_err();
+        assert!(e.msg.contains("invalid"), "{e}");
+        let e = parse_model("a@x = box(1,1,1)", "p.pcm").unwrap_err();
+        assert!(e.msg.contains("must be an integer"), "{e}");
+        let e = parse_model("s@2 = newsketch()", "p.pcm").unwrap_err();
+        assert!(e.msg.contains("only allowed on geometry nodes"), "{e}");
+        // pinned operands resolve by name to the pinned id
+        let m = parse_model("a@8 = box(1,1,1)\nb@3 = move(a, 1, 0, 0)", "p.pcm").unwrap();
+        let GeoNode::Move { node, .. } = m.graph.features[1].op else {
+            panic!("b must be a move");
+        };
+        assert_eq!(node, FeatureId(8));
     }
 }

@@ -7,7 +7,7 @@
 | 3 | Mesh kernel slice (manifold3d CSG → STL, params+expressions) | DONE | 2026-11-24 | crates/physcad {expr,tess,csg,model,stl}.rs + src/bin/physcad.rs; crates/physcad/tests/m3_gates.rs (7 analytic volume gates + mass gate + bit-stability, incl. torus); crates/physcad-view/tests/csg_capture.rs (headless render of CSG result incl. kernel torus + exact-polyhedral volume check); examples/bore-plate.pcm + examples/torus-plate.pcm; docs/m3-csg.png; evidence below |
 | 4 | Sketches + constraint solver (own LM; slvs blocked GPL-3.0) | DONE | 2026-11-24 | crates/physcad/src/sketch/{mod,solver}.rs (dual-number exact Jacobians, dense LM, Jacobi-eigen rank/DOF, Gram-Schmidt named redundancy) + .pcm sketch grammar in model.rs + examples/sketch-bracket.pcm + crates/physcad/tests/sketch_gates.rs (10 gates, residuals below) + crates/physcad-view/tests/m4_sketch_capture.rs (headless wgpu render of solved sketch; docs/m4-sketch.png). Developed on branch `m4-sketch` (concurrent M3-torus session held the tree), fast-forward merged to main 2026-11-24 |
 | 5 | Extrude/revolve from closed sketch loops | DONE | 2026-11-24 | crates/physcad/src/sketch/loops.rs (weld+walk+nesting) + src/sweep.rs (own bridge+ear-clip cap triangulator, extrude/revolve mesh builders) + Mesh64::closed_manifold_check + GeoNode::Extrude/Revolve + .pcm grammar + examples/sketch-plate.pcm (solved sketch -> extrude -> CSG cut) + crates/physcad/tests/m5_gates.rs (11 gates; exact-polyhedral devs 0.0..1.8e-11, torus-poly rel 5.7e-3 < 6e-3 bound w/ 4x convergence) + crates/physcad-view/tests/m5_capture.rs (headless render, bore see-through probe, STL round trip; docs/m5-extrude-csg.png). Developed on branch `m5-sweep` (worktree ~/physcad-m5; concurrent repair session held main), merged to main. B-rep migration stays a documented decision point. Evidence below |
-| 6 | Timeline data model + stable topology naming | not started | — | — |
+| 6 | Timeline data model + stable topology naming | DONE | 2026-11-24 | crates/physcad/src/timeline.rs (FeatureId + Timeline + insert_at/rename edit ops) + src/naming.rs (analytic FaceRecords per feature: Plane/Cylinder/Sphere/Cone/Torus; triangle re-identification + component grouping) + GeoNode operands upgraded positional usize -> FeatureId + `NAME@K` id pins in .pcm + Solid.faces readout in CLI. Mesh-based continuity heuristic, no B-rep (decision + algorithm + failure modes FM-1..FM-7 in docs/NAMING.md). crates/physcad/tests/m6_gates.rs: 12 gates incl. the DoD re-bind suite (param edit w60->80: same 7 keys, +x centroid 30->40, bore wall fixed; mid-tree rename bore->hole: keys AND centroids identical; mid-tree insertion: keys identical bit-identical centroids; extrude walls named by sketch entity; revolve cyl/plane/cone families; 180-deg cap coincidence pinned as deterministic FM-3). Evidence below |
 | 7 | CAM draft (adaptive pocket → GRBL-dialect G-code + sim) | not started | — | — |
 
 Key survey findings that changed the ladder:
@@ -294,3 +294,62 @@ Known limits after M5:
 - Cap ear-clip is O(n^2)-ish; chord-tol 0.02 mm default keeps demo
   parts ~100-200 boundary points — fine; revisit for 10k-vertex blobs.
 - No rotations in the CSG layer yet (move only) — carried from M3.
+
+## M6 evidence (all commands run on this box, 2026-11-24)
+
+Gates: `cargo fmt --check` clean; `cargo clippy -j 3 --all-targets` ->
+0 warnings; `cargo test -j 3` -> 73 lib + 8 m3 + 11 m5 + 12 m6 + 10
+sketch + 4 view lib + 6 capture/integration = 124 tests, 0 failed.
+
+The DoD re-bind gate (`cargo test -j 3 -p physcad --test m6_gates
+param_edit_rebinds_named_faces -- --nocapture`), verbatim before/after
+face tables for `param plate_w = 60 -> 80` across
+`plate@1/bore@2/part@3 = cut(plate, bore)`:
+
+```
+re-bind evidence (w=60):               re-bind evidence (w=80):
+  F1:face:+x  c=( 30.000,0,0) a=480      F1:face:+x  c=( 40.000,0,0) a=480
+  F1:face:-x  c=(-30.000,0,0) a=480      F1:face:-x  c=(-40.000,0,0) a=480
+  F1:face:+y  c=(0, 6.000,0)  a=2321.59  F1:face:+y  c=(0, 6.000,0)  a=3121.59
+  F1:face:-y  c=(0,-6.000,0)  a=2321.59  F1:face:-y  c=(0,-6.000,0)  a=3121.59
+  F1:face:+z  c=(0,0, 20.000) a=720      F1:face:+z  c=(0,0, 20.000) a=960
+  F1:face:-z  c=(0,0,-20.000) a=720      F1:face:-z  c=(0,0,-20.000) a=960
+  F2:wall:cyl c=(0,0,0) tris=128 a=376.84  (identical: bore params untouched)
+```
+
+Same 7 keys, per-key triangle counts equal, centroids moved exactly
+where the parameter says and nowhere else; volume delta = 20*12*40
+within 1e-6. Rename `bore->hole` (keeping `@2`) and mid-tree insertion
+(`knob@4`, `knob_at@5` between bore and `part@3`): face KEY SETS equal
+and centroids BIT-identical (gated via f64::to_bits). Timeline API
+(`Timeline::insert_at`, `Timeline::rename`) gates the same guarantees
+without a file round trip.
+
+Sketch-entity naming: extruded plate (4 lines + 1 circle) resolves
+exactly `cap:bottom|top + wall:ab|bc|cd|da + wall:hole` (7 faces);
+height edit 8->12 keeps all keys, `cap:top` centroid z 8->12, walls
+stretch (tri counts fixed, areas grow). Full revolve of a rectangle
+profile names 2 cylinders + 2 planes by profile entity; 90/120-deg
+sweeps add `cap:start/cap:end`; the 180-deg sweep is PINNED as the
+FM-3 contract: cap planes coincide, first record wins, both half-annuli
+come back as `F1:cap:start#0/#1` — deterministic and visible, never
+silently relabeled.
+
+CLI readout on the example corpus (`./target/debug/physcad build …`),
+zero `F0:unmatched`:
+- examples/sketch-plate.pcm: 12 named faces — extrude family F1 (caps +
+  5 entity walls; cap:top trimmed by the pocket: 2321.86 -> 2069.86
+  = annulus − pocket footprint) + pocket walls F2:face:±x/±y/−z named
+  by the TOOL box feature (cut generates no new names).
+- examples/bore-plate.pcm: 8 named faces — 6 plate planes + F2:wall:cyl
+  + F3:sphere surface (union/cut/move chain: sphere knob fused through
+  box wall re-identifies across the oblique union seam, 4512 tris).
+
+Failure modes FM-1..FM-7 (consumed names, split components, coincident
+record-order ties, unbindable slivers, sliver false-positives, unpinned
+id shifts, sketch-entity renames) documented in docs/NAMING.md; FM-3
+and FM-1 pinned by executable tests. No B-rep kernel: the naming layer
+is kernel-agnostic — it consumes only the welded f64 kernel mesh.
+
+License gate: NO new third-party deps in M6 (timeline/naming are
+in-house; LICENSES.md untouched).

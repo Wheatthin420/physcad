@@ -106,3 +106,32 @@ Semantics:
 
 Example: examples/sketch-plate.pcm (solved rectangle+bore sketch ->
 extrude -> corner-pocket cut; V exact-polyhedral within 1.8e-11).
+
+## M6: feature ids and named faces (docs/NAMING.md)
+
+Every geometry statement carries a stable feature id. Pin it explicitly
+(recommended; what the editor will always do) or take the next
+monotonic id at parse time:
+
+    plate@1 = box(plate_w, 12, 40)
+    bore@2  = cylinder(5, 16, 64)
+    part@3  = cut(plate, bore)      # operands by NAME, identity by ID
+
+Pinned ids survive renames of other features and insertion of new
+features anywhere in the file; unpinned ids are positional (safe for
+appends, shift if you insert earlier — failure mode FM-6). `F0` is
+reserved.
+
+`physcad build` prints the named faces of the root solid:
+
+    named_faces:  7
+      F1:face:-x    ...  F1:face:+z    ...  F2:wall:cyl  ...
+      F1:cap:bottom ...  F1:wall:ab   ...
+
+Keys are `F{feature id}:{structural tag}` — never the user name, never
+the triangle order. Tags: box `face:±x/±y/±z`; cylinder `wall:cyl`,
+`cap:±y`; sphere/torus `surface`; extrude `cap:bottom|top` and
+`wall:<sketch-entity>`; revolve `cap:start|end` and `wall:<entity>`.
+CSG adds no names: a cut's wall faces inherit the TOOL feature's keys.
+Unbindable triangles group visibly under `F0:unmatched` (CLI warning);
+they are a naming failure reported, not hidden.
