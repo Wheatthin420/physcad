@@ -9,8 +9,12 @@ publish.workspace = true
 [dependencies]
 glam.workspace = true
 manifold3d = { version = "0.4.2", default-features = false }
+# M7: independent G-code parser for the cut simulator (never our own
+# emitter's reader — see docs/CAM.md hard-compat rule)
+gcode = "0.7.0"
 
 [dev-dependencies]
+image.workspace = true
 
 [lints]
 workspace = true

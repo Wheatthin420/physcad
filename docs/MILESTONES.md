@@ -8,7 +8,7 @@
 | 4 | Sketches + constraint solver (own LM; slvs blocked GPL-3.0) | DONE | 2026-11-24 | crates/physcad/src/sketch/{mod,solver}.rs (dual-number exact Jacobians, dense LM, Jacobi-eigen rank/DOF, Gram-Schmidt named redundancy) + .pcm sketch grammar in model.rs + examples/sketch-bracket.pcm + crates/physcad/tests/sketch_gates.rs (10 gates, residuals below) + crates/physcad-view/tests/m4_sketch_capture.rs (headless wgpu render of solved sketch; docs/m4-sketch.png). Developed on branch `m4-sketch` (concurrent M3-torus session held the tree), fast-forward merged to main 2026-11-24 |
 | 5 | Extrude/revolve from closed sketch loops | DONE | 2026-11-24 | crates/physcad/src/sketch/loops.rs (weld+walk+nesting) + src/sweep.rs (own bridge+ear-clip cap triangulator, extrude/revolve mesh builders) + Mesh64::closed_manifold_check + GeoNode::Extrude/Revolve + .pcm grammar + examples/sketch-plate.pcm (solved sketch -> extrude -> CSG cut) + crates/physcad/tests/m5_gates.rs (11 gates; exact-polyhedral devs 0.0..1.8e-11, torus-poly rel 5.7e-3 < 6e-3 bound w/ 4x convergence) + crates/physcad-view/tests/m5_capture.rs (headless render, bore see-through probe, STL round trip; docs/m5-extrude-csg.png). Developed on branch `m5-sweep` (worktree ~/physcad-m5; concurrent repair session held main), merged to main. B-rep migration stays a documented decision point. Evidence below |
 | 6 | Timeline data model + stable topology naming | DONE | 2026-11-24 | crates/physcad/src/timeline.rs (FeatureId + Timeline + insert_at/rename edit ops) + src/naming.rs (analytic FaceRecords per feature: Plane/Cylinder/Sphere/Cone/Torus; triangle re-identification + component grouping) + GeoNode operands upgraded positional usize -> FeatureId + `NAME@K` id pins in .pcm + Solid.faces readout in CLI. Mesh-based continuity heuristic, no B-rep (decision + algorithm + failure modes FM-1..FM-7 in docs/NAMING.md). crates/physcad/tests/m6_gates.rs: 12 gates incl. the DoD re-bind suite (param edit w60->80: same 7 keys, +x centroid 30->40, bore wall fixed; mid-tree rename bore->hole: keys AND centroids identical; mid-tree insertion: keys identical bit-identical centroids; extrude walls named by sketch entity; revolve cyl/plane/cone families; 180-deg cap coincidence pinned as deterministic FM-3). Evidence below |
-| 7 | CAM draft (adaptive pocket → GRBL-dialect G-code + sim) | not started | — | — |
+| 7 | CAM draft (adaptive pocket → GRBL-dialect G-code + sim) | DONE | 2026-11-24 | crates/physcad/src/cam/{mod,gcode,plan,sim,feeds}.rs + Solid.table face-binding for CAM ops + examples/pocket-plate.pcm (non-convex C + island) + crates/physcad/tests/m7_gates.rs (3 gates: computed feeds; full pipeline = plan -> emit -> OUR grammar gate -> THIRD-PARTY `gcode` crate parse -> manifold sim vs CSG boolean, vol diff 0.39% < 3% bound, gouge 0.40% < 0.5% bound, coverage self-cert 0.048 mm < 0.1 mm; face-key binding survives param edit t12->t15: whole bound path shifts +1.5 mm exactly) + docs/CAM.md (dialect subset table, every claim cited to grbl wiki/source + Harvey Tool chart) + docs/m7-toolpath.png (rendered from the sim's PARSED segments, pixel probes assert). Evidence below |
 
 Key survey findings that changed the ladder:
 - slvs = GPL-3.0; M4 proceeds with own LM solver unless user approves GPL.
@@ -353,3 +353,57 @@ is kernel-agnostic — it consumes only the welded f64 kernel mesh.
 
 License gate: NO new third-party deps in M6 (timeline/naming are
 in-house; LICENSES.md untouched).
+
+## M7 evidence (2026-11-24)
+
+Independent parser (hard-compat rule): `gcode` 0.7.0 — "A gcode
+parser for no-std applications", license `MIT OR Apache-2.0` read from
+crates.io API (User-Agent required) 2026-11-24. Every emitted program
+is parsed by it in `emitted_program_passes_the_gate` (unit test) and
+`sim::replay` consumes ONLY its AST. Rejected candidate noted in
+LICENSES.md: crates.io `nc` is now a syscalls crate, not a G-code
+parser (verified via its repo description same day).
+
+Dialect: docs/CAM.md table — every modal claim cited to
+github.com/gnea/grbl wiki (Commands `$G` modal groups + Configuration
+$$ table) and grbl source (`protocol.h:31-32` LINE_BUFFER_SIZE 80;
+comments stripped per protocol.c). Subset actually emitted: G21 G90
+G17 G94 G40 preamble, G0/G1 only, F on every G1, M3 S../M5, one G4
+dwell, M2 end, `(...)` header. No arcs/probing/canned-cycles/comp/
+incremental/inverse-feed — and no claim GRBL lacks them.
+
+Feeds (gate `gate_feed_rates_are_computed_not_guessed`, printed):
+`FEEDS rpm_raw=12937 rpm_used=10000 feed_raw=1016.0 feed_used=1000.0
+mm/min chip_used=0.0500 mm/tooth clamped=(true, true)` — RPM/IPM from
+Harvey Tool chart (SFM 800, 1/4" -> .002 IPT, RPM=(3.82*SFM)/D,
+IPM=RPM*IPT*T), ceilings from MachineSpec, not guessed constants.
+
+Sim vs CSG (same ground truth as M3/M5): pocket prism from the exact
+solved region polygon; sim union from parsed G-code swept prisms:
+`SIM pocket_csg=6983.4 mm3 sim_removed=6955.9 mm3 diff=0.3942%
+gouge=28.21 mm3 (0.4039%) uncut=55.74 mm3 cut_xy=212 cut_z=8
+rapids=10 lines=236 coverage_excess=0.0480 mm rest_area=9.66 mm2` — bounds asserted:
+3% volume, 0.5% gouge, 2.5% uncut. Unit sim gate vs analytic stadium:
+199.16 vs 199.27 mm3 (2% bound).
+
+Coverage self-cert: every r-disc-reachable raster pixel within
+r + 2*pixel of a cut path (worst 0.048 mm <= 0.10 mm or planning
+fails); no-disc-reachable rest area reported at 9.66 mm2 — rest
+roughing deferred and honestly counted in `uncut`.
+
+Figure: docs/m7-toolpath.png rendered from the SIM's PARSED segments
+(dogfood), pixel probes assert green cut=16122, black outline=11019,
+gray rapid=4938, red plunge markers=64; vision gestalt check done.
+Program text itself: docs/m7-pocket.nc (236 lines) for human review.
+
+Binding (gate 3): thickness 12->15 on F1 moves named face `F1:face:+z`
+by +1.5 mm (centered box) and the entire toolpath floor/plunge/level Z
+follows by the same shift; XY of every cut move unchanged.
+
+Gates (this commit): `cargo fmt --check` clean; `cargo clippy -j 3
+--all-targets` 0 warnings; `cargo test -j 3` -> 85 lib + 8 m3 + 11 m5
++ 12 m6 + 3 m7 + 10 sketch + 4 view-lib + 6 view-capture = 139 passed,
+0 failed, CARGO_EXIT=0.
+
+License gate: 1 new dep (`gcode` 0.7.0, MIT OR Apache-2.0, Rust only)
+recorded in LICENSES.md before use.

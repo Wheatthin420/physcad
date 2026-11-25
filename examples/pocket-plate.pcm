@@ -1,0 +1,49 @@
+# M7 demo — C-plate for adaptive pocketing (non-convex + island).
+# The pocket sketch is the POCKET FOOTPRINT: an 8-gon C opening to the
+# right (two reflex vertices at l3/l4 and l4/l5) with a circular island.
+# The CAM op binds to the plate's named top face (F1:face:+z per the M6
+# scheme); see crates/physcad/tests/m7_gates.rs + docs/CAM.md. Units mm.
+density = 7.85
+param w = 80
+param d = 60
+param t = 12
+
+plate = box(w, d, t)
+
+pocket = newsketch()
+c1 = point(pocket, -30, -20)
+c2 = point(pocket, 30, -20)
+c3 = point(pocket, 30, -8)
+c4 = point(pocket, -6, -8)
+c5 = point(pocket, -6, 8)
+c6 = point(pocket, 30, 8)
+c7 = point(pocket, 30, 20)
+c8 = point(pocket, -30, 20)
+l1 = line(pocket, c1, c2)
+l2 = line(pocket, c2, c3)
+l3 = line(pocket, c3, c4)
+l4 = line(pocket, c4, c5)
+l5 = line(pocket, c5, c6)
+l6 = line(pocket, c6, c7)
+l7 = line(pocket, c7, c8)
+l8 = line(pocket, c8, c1)
+f1 = fix(c1, -30, -20)
+f2 = fix(c2, 30, -20)
+f3 = fix(c3, 30, -8)
+f4 = fix(c4, -6, -8)
+f5 = fix(c5, -6, 8)
+f6 = fix(c6, 30, 8)
+f7 = fix(c7, 30, 20)
+f8 = fix(c8, -30, 20)
+icen = point(pocket, -18, 0)
+island = circle(pocket, icen, 4)
+f9 = fix(icen, -18, 0)
+isl_dim = radius(island, 5)
+
+# The same footprint drives the CAD side too: a 4 mm-deep pocket cut
+# into the plate (floor at z = 2, since the plate spans z in [-6, 6]).
+# The M7 CAM op plans against the untouched plate + this region; the
+# cut here shows the geometry the toolpath must reproduce (docs/CAM.md
+# sim-vs-CSG gate compares exactly this volume).
+pocket_tool = extrude(pocket, 4, 2)
+part = cut(plate, pocket_tool)

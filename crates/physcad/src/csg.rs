@@ -63,6 +63,11 @@ pub struct Solid {
     /// (feature id, tag, component). Unmatched kernel triangles group
     /// under key `F0:unmatched` — naming failures stay visible.
     pub faces: Vec<NamedFace>,
+    /// M7: the declaring root face table the faces were re-identified
+    /// against. CAM ops bind to faces *analytically* through this table
+    /// (a pocket needs the top face's plane, not just its centroid), and
+    /// the binding survives renames because keys embed ids.
+    pub table: FaceTable,
 }
 
 impl Solid {
@@ -448,7 +453,34 @@ pub fn evaluate_with(graph: &Timeline, sketches: &[Sketch]) -> Result<Solid, Ker
         genus,
         num_tri,
         faces,
+        table: tables[root].clone(),
     })
+}
+
+/// M7: kernel manifold from our own f64 mesh builder (same contract as
+/// the internal path: closed-manifold check first, then `from_mesh_f64`).
+/// Used by the CAM simulator to build swept-tool solids.
+pub fn manifold_from_mesh64(m: &Mesh64) -> Result<Manifold, KernelError> {
+    mesh_to_manifold(m)
+}
+
+/// M7: rebuild a kernel `Manifold` from an evaluated solid's f32 display
+/// mesh (vertices welded bitwise on the way in). The CAM simulator needs
+/// the stock as a boolean operand again; the display mesh is exactly the
+/// kernel output widened to f32, and CSG-plane coordinates here are
+/// f32-exact, so no geometry moves. Deliberate limitation: a mesh that
+/// the kernel smoothed differently in f32 would re-manifold differently;
+/// the simulator's cross-check gate is what keeps that honest.
+pub fn manifold_from_display(mesh: &Mesh) -> Result<Manifold, KernelError> {
+    let m64 = Mesh64 {
+        positions: mesh
+            .positions
+            .iter()
+            .map(|p| [f64::from(p[0]), f64::from(p[1]), f64::from(p[2])])
+            .collect(),
+        indices: mesh.indices.clone(),
+    };
+    mesh_to_manifold(&m64)
 }
 
 /// Compatibility wrapper for pure-geometry timelines (no sketch nodes).

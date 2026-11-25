@@ -25,6 +25,7 @@ Scan method (2026-11-24, reproducible):
 | image | 0.25.10 | MIT OR Apache-2.0 | PNG screenshot output (png feature only) |
 | pollster | 1.0.3 | MIT OR Apache-2.0 | block_on for adapter/device setup (no async runtime yet) |
 | manifold3d | 0.4.2 (default-features=false) | Apache-2.0 OR MIT | M3 CSG kernel (facade for manifold-csg 0.4.2 -> manifold-csg-sys 3.5.106). `parallel` feature OFF: single-threaded upstream manifold — deliberate for deterministic rebuilds and to skip the bundled TBB build. |
+| gcode | 0.7.0 | MIT OR Apache-2.0 | M7: INDEPENDENT G-code parser used by cam::sim::replay and the parser gate in tests/m7_gates.rs (hard-compat rule: our emitter must not judge its own output). License read from crates.io `versions[].license` 2026-11-24. Note: crates.io name `nc` looked like a candidate but is now a syscalls crate (xushaohua/nc) — verified same day, not used. |
 
 C++ actually compiled into the binary: manifold-csg-sys fetches
 elalish/manifold **v3.5.5** (detached HEAD "Release v3.5.5 (#1947)" in its

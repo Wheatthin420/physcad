@@ -3,6 +3,7 @@
 //! timeline with stable topology naming.
 //! Deliberately GPU-free and UI-free so geometry can be unit-tested headless.
 
+pub mod cam;
 pub mod camera;
 pub mod csg;
 pub mod expr;
